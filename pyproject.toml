@@ -26,8 +26,8 @@ dependencies = [
 cpu   = ["torch>=2.7", "torchaudio>=2.7"]   # any machine, no GPU
 cu126 = ["torch>=2.7", "torchaudio>=2.7"]   # NVIDIA, CUDA 12.6 wheels (older cards / older drivers)
 cu128 = ["torch>=2.7", "torchaudio>=2.7"]   # NVIDIA, CUDA 12.8 wheels (needed for RTX 50-series)
-rocm  = ["torch>=2.7", "torchaudio>=2.7"]   # AMD GPUs, ROCm wheels (Linux only)
-xpu   = ["torch>=2.7", "torchaudio>=2.7"]   # Intel GPUs (Arc / Iris Xe), Windows + Linux
+rocm  = ["torch>=2.7", "torchaudio>=2.7", "pytorch-triton-rocm; sys_platform == 'linux'"]   # AMD GPUs, ROCm wheels (Linux only)
+xpu   = ["torch>=2.7", "torchaudio>=2.7", "pytorch-triton-xpu; sys_platform == 'linux'", "triton-xpu; sys_platform == 'linux'"]   # Intel GPUs (Arc / Iris Xe), Windows + Linux
 apple = ["torch>=2.7", "torchaudio>=2.7"]   # Apple Silicon: the normal PyPI macOS wheel includes MPS
 
 # ---- optional backends (combine with any hardware extra) ---------------------------------------
@@ -60,6 +60,11 @@ torchaudio = [
   { index = "pytorch-rocm",  extra = "rocm", marker = "sys_platform == 'linux'" },
   { index = "pytorch-xpu",   extra = "xpu",  marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
 ]
+
+# triton builds that torch depends on only exist on the PyTorch indexes, not PyPI.
+pytorch-triton-xpu = [{ index = "pytorch-xpu",  extra = "xpu",  marker = "sys_platform == 'linux'" }]
+triton-xpu         = [{ index = "pytorch-xpu",  extra = "xpu",  marker = "sys_platform == 'linux'" }]
+pytorch-triton-rocm = [{ index = "pytorch-rocm", extra = "rocm", marker = "sys_platform == 'linux'" }]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
