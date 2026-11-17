@@ -1,0 +1,122 @@
+# ---------------------------------------------------------------------------
+# Target-speaker ASR configuration.
+# Every component is a *preset* (name + params). Pick which one starts active
+# under `use:`; the tablet UI can switch between presets at runtime.
+# Add your own presets freely - a preset is just {name: <backend>, params: {...}}.
+# ---------------------------------------------------------------------------
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  token: null                      # set a string to require ?token=... (recommended on shared Wi-Fi)
+  ssl_certfile: certs/server.crt   # needed for the tablet microphone (HTTPS). Create with scripts/make_cert.py
+  ssl_keyfile: certs/server.key
+
+profiles_dir: profiles
+plugins: []                        # extra python modules that register your own backends, e.g. ["my_backends"]
+
+enrollment:
+  min_speech_seconds: 3.0
+
+# Active presets at start-up (keys of `presets` below, or a bare backend name)
+use:
+  vad: silero
+  speaker: speechbrain_ecapa
+  stt: whisper_small
+  denoiser: none
+
+# Runtime behaviour (the UI can live-tune similarity_threshold)
+pipeline:
+  vad_threshold: 0.5
+  min_speech_ms: 250
+  min_silence_ms: 500         # pause that ends an utterance -> controls latency (lower = faster, more cuts)
+  speech_pad_ms: 200
+  max_utterance_s: 20.0
+  similarity_threshold: 0.5   # raise if other speakers leak through, lower if the target gets rejected
+  short_policy: tile          # tile | reject | accept   (utterances shorter than the encoder minimum)
+  language: null              # default language hint for STT (null = auto)
+  denoise_for_verify: false
+  denoise_for_stt: false
+  emit_rejected: true
+
+presets:
+  vad:
+    silero:
+      label: "Silero VAD (recommended)"
+      name: silero
+      params: {onnx: false}
+    silero_onnx:
+      label: "Silero VAD (ONNX runtime, no torch needed)"
+      name: silero
+      params: {onnx: true}
+    energy:
+      label: "Energy gate (no dependencies, quiet rooms only)"
+      name: energy
+      params: {margin_db: 12.0}
+
+  speaker:
+    speechbrain_ecapa:
+      label: "SpeechBrain ECAPA-TDNN (recommended)"
+      name: speechbrain_ecapa
+      params:
+        source: speechbrain/spkrec-ecapa-voxceleb
+        savedir: models/spkrec-ecapa-voxceleb
+        device: cpu
+    sherpa_3dspeaker:
+      label: "3D-Speaker ERes2Net via sherpa-onnx (download the .onnx first)"
+      name: sherpa_onnx
+      params:
+        model: models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
+        num_threads: 2
+
+  stt:
+    whisper_small:
+      label: "Whisper small - multilingual, CPU int8"
+      name: faster_whisper
+      params: {model_size_or_path: small, device: cpu, compute_type: int8}
+    whisper_base:
+      label: "Whisper base - faster, less accurate"
+      name: faster_whisper
+      params: {model_size_or_path: base, device: cpu, compute_type: int8}
+    whisper_large_v3:
+      label: "Whisper large-v3 - best Whisper accuracy, slow on CPU"
+      name: faster_whisper
+      params: {model_size_or_path: large-v3, device: cpu, compute_type: int8}
+    sensevoice_funasr:
+      label: "SenseVoice-Small (FunASR) - zh / yue / en / ja / ko"
+      name: funasr
+      params: {model: iic/SenseVoiceSmall, device: cpu}
+    paraformer_zh:
+      label: "Paraformer (FunASR) - Mandarin"
+      name: funasr
+      params: {model: paraformer-zh, device: cpu}
+    mms_1b_all:
+      label: "MMS-1B-all (HF) - 1100+ languages; set language hint to ISO-639-3 e.g. eng, zsm, cmn"
+      name: hf_transformers
+      params: {model: facebook/mms-1b-all, device: cpu}
+    hf_whisper_custom:
+      label: "HF Whisper fine-tune (edit the model id in config.yaml)"
+      name: hf_transformers
+      params: {model: openai/whisper-small, device: cpu}
+    sherpa_sensevoice:
+      label: "SenseVoice int8 via sherpa-onnx (download model first; lightest CPU option)"
+      name: sherpa_onnx
+      params:
+        kind: sense_voice
+        model: models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/model.int8.onnx
+        tokens: models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/tokens.txt
+        num_threads: 4
+        use_itn: true
+    local_http_server:
+      label: "Local OpenAI-compatible STT server (whisper.cpp / speaches / ...)"
+      name: openai_http
+      params: {base_url: "http://127.0.0.1:8080", model: whisper-1}
+
+  denoiser:
+    none:
+      label: "Off (recommended first)"
+      name: none
+    deepfilternet:
+      label: "DeepFilterNet (heavy noise only - A/B test it)"
+      name: deepfilternet
+      params: {post_filter: false}

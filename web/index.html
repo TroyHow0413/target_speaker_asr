@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Target Speaker ASR</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --fg:#1b1f24; --muted:#6b7480; --acc:#2563eb; --ok:#15803d; --bad:#b91c1c; --line:#dfe3e8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151a; --card:#1b2028; --fg:#e8ebef; --muted:#97a1ad; --acc:#60a5fa; --ok:#4ade80; --bad:#f87171; --line:#2c333d; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui,sans-serif; padding:0 16px 40px; max-width:900px; margin-inline:auto; }
+  header { display:flex; justify-content:space-between; align-items:baseline; padding:16px 0 8px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  label { display:block; font-size:13px; color:var(--muted); }
+  select,input[type=text],input:not([type]) { width:100%; font:inherit; padding:10px; margin-top:4px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
+  input[type=range] { width:100%; }
+  button { font:inherit; padding:12px 18px; border:0; border-radius:10px; background:var(--acc); color:#fff; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  button.danger { background:var(--bad); }
+  button:disabled { opacity:.5; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:10px; }
+  .row > * { flex:1 1 160px; }
+  .warn { background:#fef3c7; color:#78350f; padding:10px 14px; border-radius:8px; margin-bottom:14px; }
+  #status { color:var(--muted); font-size:13px; }
+  #msg { margin:10px 0 0; font-size:14px; min-height:1.2em; }
+  #log { margin-top:12px; max-height:55vh; overflow:auto; }
+  .line { padding:8px 10px; border-left:3px solid var(--ok); margin-bottom:6px; background:var(--bg); border-radius:0 8px 8px 0; }
+  .line .meta { display:block; font-size:12px; color:var(--muted); }
+  .line.rej { border-left-color:var(--bad); color:var(--muted); display:none; }
+  #log.show-rej .line.rej { display:block; }
+  #live-ind { height:1.4em; color:var(--acc); font-size:14px; }
+  .big { font-size:18px; padding:16px 24px; }
+</style>
+</head>
+<body>
+<header><h1>Target Speaker ASR</h1><span id="status">connecting…</span></header>
+<div id="secwarn" class="warn" hidden>The microphone only works on <b>HTTPS</b> (or localhost). Start the server with the self-signed certificate (see README) and open the https:// address.</div>
+
+<section class="card">
+  <h2>Models</h2>
+  <div class="grid">
+    <label>Speech-to-text<select id="sel-stt"></select></label>
+    <label>Speaker encoder<select id="sel-speaker"></select></label>
+    <label>VAD<select id="sel-vad"></select></label>
+    <label>Denoiser<select id="sel-denoiser"></select></label>
+  </div>
+  <div class="grid" style="margin-top:12px">
+    <label>Language hint (blank = auto)<input id="lang" placeholder="en, zh, ms, ta …"></label>
+    <label>Match threshold: <output id="thr-out"></output><input type="range" id="thr" min="0" max="1" step="0.01" value="0.5"></label>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Target voice</h2>
+  <div class="grid">
+    <label>Active profile<select id="sel-profile"></select></label>
+    <label>New / update profile id<input id="new-profile" placeholder="e.g. alice"></label>
+  </div>
+  <div class="row">
+    <button id="btn-rec">● Record voice</button>
+    <label style="flex:2">…or upload a recording<input type="file" id="file" accept="audio/*"></label>
+    <label style="flex:0 0 auto"><input type="checkbox" id="append"> add to existing</label>
+    <button id="btn-del" class="secondary">Delete profile</button>
+  </div>
+  <p id="msg"></p>
+  <small style="color:var(--muted)">Record 10–30 s of the target person speaking alone in a quiet place.</small>
+</section>
+
+<section class="card">
+  <h2>Live transcript</h2>
+  <div class="row" style="margin-top:0">
+    <button id="btn-live" class="big">Start listening</button>
+    <label style="flex:0 0 auto"><input type="checkbox" id="show-rej"> show rejected (other speakers)</label>
+  </div>
+  <div id="live-ind"></div>
+  <div id="log"></div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+if (!window.isSecureContext) $('secwarn').hidden = false;
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers, TOKEN ? {'X-Token': TOKEN} : {});
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let m = r.statusText;
+    try { m = (await r.json()).detail || m; } catch (e) {}
+    throw new Error(m);
+  }
+  return r.json();
+}
+const setStatus = t => $('status').textContent = t;
+const say = (t, bad) => { $('msg').textContent = t; $('msg').style.color = bad ? 'var(--bad)' : 'var(--fg)'; };
+
+/* ---------------- model / profile selectors ---------------- */
+let state = null;
+const KINDS = ['stt', 'speaker', 'vad', 'denoiser'];
+
+function fillSelect(kind) {
+  const sel = $('sel-' + kind), active = state.active[kind];
+  sel.innerHTML = '';
+  const presets = state.presets[kind] || {};
+  if (Object.keys(presets).length) {
+    const g = document.createElement('optgroup'); g.label = 'Presets';
+    for (const [key, label] of Object.entries(presets)) g.append(new Option(label, 'preset:' + key));
+    sel.append(g);
+  }
+  const g2 = document.createElement('optgroup'); g2.label = 'Backends (default params)';
+  for (const n of state.available[kind]) g2.append(new Option(n, 'name:' + n));
+  sel.append(g2);
+  sel.value = active.preset ? 'preset:' + active.preset : 'name:' + active.name;
+}
+
+function fillProfiles() {
+  const sel = $('sel-profile'), prev = sel.value;
+  sel.innerHTML = '';
+  for (const p of state.profiles) sel.append(new Option(`${p.name}${p.duration_s ? ' (' + p.duration_s + 's)' : ''}`, p.id));
+  if (!state.profiles.length) sel.append(new Option('— none yet: record or upload a voice —', ''));
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+
+async function refresh() {
+  state = await api('/api/state');
+  KINDS.forEach(fillSelect);
+  fillProfiles();
+  if (document.activeElement !== $('thr')) {
+    $('thr').value = state.pipeline.similarity_threshold;
+    $('thr-out').textContent = (+$('thr').value).toFixed(2);
+  }
+  setStatus('ready');
+}
+
+for (const kind of KINDS) {
+  $('sel-' + kind).onchange = async () => {
+    const v = $('sel-' + kind).value, body = {kind};
+    if (v.startsWith('preset:')) body.preset = v.slice(7); else body.name = v.slice(5);
+    KINDS.forEach(k => $('sel-' + k).disabled = true);
+    setStatus(`loading ${kind} model… (first use may download it)`);
+    try { await api('/api/select', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); }
+    catch (e) { alert(e.message); }
+    KINDS.forEach(k => $('sel-' + k).disabled = false);
+    await refresh();
+  };
+}
+
+$('thr').oninput = () => {
+  $('thr-out').textContent = (+$('thr').value).toFixed(2);
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: 'config', similarity_threshold: +$('thr').value}));
+};
+
+/* ---------------- microphone capture (16 kHz int16) ---------------- */
+const WORKLET = `class Tap extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(2048);this.n=0}
+process(i){const c=i[0][0];if(!c)return true;for(let k=0;k<c.length;k++){this.b[this.n++]=c[k];if(this.n===2048){this.port.postMessage(this.b.slice(0));this.n=0}}return true}}
+registerProcessor('tap',Tap)`;
+
+function makeResampler(inRate, outRate) {
+  if (inRate === outRate) return x => x;
+  const ratio = inRate / outRate; let pos = 0, tail = new Float32Array(0);
+  return input => {
+    const buf = new Float32Array(tail.length + input.length); buf.set(tail); buf.set(input, tail.length);
+    const out = [];
+    while (pos + 1 < buf.length) {
+      const i = Math.floor(pos), f = pos - i;
+      out.push(buf[i] * (1 - f) + buf[i + 1] * f); pos += ratio;
+    }
+    const keep = Math.min(Math.floor(pos), buf.length);
+    tail = buf.slice(keep); pos -= keep;
+    return Float32Array.from(out);
+  };
+}
+
+async function startCapture(onPcm) {
+  const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: true}});
+  let ctx;
+  try { ctx = new AudioContext({sampleRate: 16000}); } catch (e) { ctx = new AudioContext(); }
+  await ctx.resume();
+  const url = URL.createObjectURL(new Blob([WORKLET], {type: 'application/javascript'}));
+  await ctx.audioWorklet.addModule(url);
+  const src = ctx.createMediaStreamSource(stream), node = new AudioWorkletNode(ctx, 'tap');
+  const mute = ctx.createGain(); mute.gain.value = 0;      // keep the graph "pulled" without playing the mic back
+  src.connect(node); node.connect(mute); mute.connect(ctx.destination);
+  const rs = makeResampler(ctx.sampleRate, 16000);
+  node.port.onmessage = e => {
+    const f = rs(e.data), i16 = new Int16Array(f.length);
+    for (let k = 0; k < f.length; k++) { const s = Math.max(-1, Math.min(1, f[k])); i16[k] = s < 0 ? s * 32768 : s * 32767; }
+    if (i16.length) onPcm(i16);
+  };
+  return async () => {
+    node.port.onmessage = null; src.disconnect(); node.disconnect();
+    stream.getTracks().forEach(t => t.stop()); await ctx.close(); URL.revokeObjectURL(url);
+  };
+}
+
+function wavBlob(chunks, sr = 16000) {
+  const n = chunks.reduce((a, c) => a + c.length, 0), v = new DataView(new ArrayBuffer(44 + n * 2));
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  let o = 44; for (const c of chunks) for (let i = 0; i < c.length; i++, o += 2) v.setInt16(o, c[i], true);
+  return new Blob([v.buffer], {type: 'audio/wav'});
+}
+
+/* ---------------- enrollment ---------------- */
+function targetProfileId() { return $('new-profile').value.trim() || $('sel-profile').value; }
+
+async function uploadEnroll(blob, filename) {
+  const pid = targetProfileId();
+  if (!pid) return say('Enter a profile id first (e.g. "alice").', true);
+  const fd = new FormData();
+  fd.append('profile', pid); fd.append('append', $('append').checked ? 'true' : 'false');
+  fd.append('name', pid); fd.append('file', blob, filename);
+  say('Processing voice…');
+  try {
+    const r = await api('/api/enroll', {method: 'POST', body: fd});
+    say(`Saved "${r.profile}": ${r.speech_seconds}s of speech, consistency ${r.report.consistency}.` + (r.warning ? ' ⚠ ' + r.warning : ''), !!r.warning);
+    $('new-profile').value = '';
+    await refresh(); $('sel-profile').value = r.profile;
+  } catch (e) { say(e.message, true); }
+}
+
+let recStop = null, recChunks = [], recTimer = null;
+$('btn-rec').onclick = async () => {
+  if (recStop) {
+    clearInterval(recTimer);
+    const stop = recStop; recStop = null; await stop();
+    $('btn-rec').textContent = '● Record voice';
+    await uploadEnroll(wavBlob(recChunks), 'enroll.wav');
+    return;
+  }
+  if (!targetProfileId()) return say('Enter a profile id first (e.g. "alice").', true);
+  try {
+    recChunks = []; const t0 = Date.now();
+    recStop = await startCapture(c => recChunks.push(c));
+    $('btn-rec').textContent = '■ Stop & save';
+    recTimer = setInterval(() => say(`Recording… ${((Date.now() - t0) / 1000).toFixed(0)}s (aim for 15–30s)`), 250);
+  } catch (e) { say('Microphone error: ' + e.message, true); }
+};
+$('file').onchange = async () => { const f = $('file').files[0]; if (f) await uploadEnroll(f, f.name); $('file').value = ''; };
+$('btn-del').onclick = async () => {
+  const pid = $('sel-profile').value;
+  if (pid && confirm(`Delete profile "${pid}"?`)) { await api('/api/profiles/' + encodeURIComponent(pid), {method: 'DELETE'}); await refresh(); }
+};
+
+/* ---------------- live transcription ---------------- */
+let ws = null, stopCap = null, flushTimer = null;
+
+function addLine(ev) {
+  const d = document.createElement('div'), m = document.createElement('span'), t = document.createElement('span');
+  d.className = 'line' + (ev.type === 'rejected' ? ' rej' : '');
+  m.className = 'meta';
+  const score = ev.score == null ? '' : ` · match ${ev.score.toFixed(2)}`;
+  m.textContent = ev.type === 'transcript'
+    ? `${ev.t0}s${score}${ev.language ? ' · ' + ev.language : ''} · stt ${ev.stt_ms} ms`
+    : `${ev.t0}s${score} · skipped: ${ev.reason}`;
+  t.textContent = ev.type === 'transcript' ? ev.text : '(not the target speaker — not transcribed)';
+  d.append(m, t); $('log').prepend(d);
+}
+
+function onEvent(ev) {
+  if (ev.type === 'speech_start') $('live-ind').textContent = '● hearing speech…';
+  else if (ev.type === 'speech_discard') $('live-ind').textContent = '';
+  else if (ev.type === 'transcript' || ev.type === 'rejected') { $('live-ind').textContent = ''; addLine(ev); }
+  else if (ev.type === 'error') { say(ev.message, true); }
+  else if (ev.type === 'flushed' && ws) ws.close();
+}
+
+function liveUi(on) { $('btn-live').textContent = on ? 'Stop listening' : 'Start listening'; $('btn-live').classList.toggle('danger', on); }
+
+$('btn-live').onclick = async () => {
+  if (ws) return stopLive();
+  const pid = $('sel-profile').value;
+  if (!pid) return say('Record or upload the target voice first.', true);
+  const q = new URLSearchParams({profile: pid});
+  if ($('lang').value.trim()) q.set('language', $('lang').value.trim());
+  if (TOKEN) q.set('token', TOKEN);
+  $('btn-live').disabled = true; setStatus('starting session…');
+  const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/stream?${q}`);
+  sock.binaryType = 'arraybuffer'; ws = sock;
+  let ready;
+  const readyP = new Promise((res, rej) => { ready = {res, rej}; });
+  sock.onmessage = e => {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'ready') ready.res();
+    else if (ev.type === 'error' && sock.readyState === 1 && !stopCap) ready.rej(new Error(ev.message));
+    onEvent(ev);
+  };
+  sock.onerror = () => ready.rej(new Error('WebSocket connection failed'));
+  sock.onclose = () => { clearTimeout(flushTimer); ws = null; liveUi(false); $('live-ind').textContent = ''; $('btn-live').disabled = false; setStatus('ready'); ready.rej(new Error('closed')); };
+  try {
+    await readyP;
+    sock.send(JSON.stringify({type: 'config', similarity_threshold: +$('thr').value}));
+    stopCap = await startCapture(i16 => { if (sock.readyState === 1) sock.send(i16.buffer); });
+    liveUi(true); setStatus('listening'); say('');
+  } catch (e) {
+    if (e.message !== 'closed') say(e.message, true);
+    if (stopCap) { await stopCap(); stopCap = null; }
+    sock.close();
+  }
+  $('btn-live').disabled = false;
+};
+
+async function stopLive() {
+  if (stopCap) { await stopCap(); stopCap = null; }
+  if (ws && ws.readyState === 1) {
+    setStatus('finishing last sentence…');
+    ws.send(JSON.stringify({type: 'flush'}));
+    flushTimer = setTimeout(() => ws && ws.close(), 20000);
+  }
+}
+
+$('show-rej').onchange = () => $('log').classList.toggle('show-rej', $('show-rej').checked);
+refresh().catch(e => setStatus('server error: ' + e.message));
+</script>
+</body>
+</html>
