@@ -205,6 +205,9 @@ class Engine:
             "presets": {k: {key: v.get("label", key) for key, v in (presets_cfg.get(k) or {}).items()}
                         for k in KINDS},
             "backend_ui": BACKEND_UI,
+            # params of each config preset: the UI uses them as the starting point for a backend
+            "preset_specs": {k: {key: {"name": v["name"], "params": v.get("params") or {}}
+                                 for key, v in (presets_cfg.get(k) or {}).items()} for k in KINDS},
             "profiles": self.store.list(),
             "pipeline": dataclasses.asdict(self.defaults),
             # where each loaded model actually runs (None = not loaded yet)

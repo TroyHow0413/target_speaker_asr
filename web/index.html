@@ -25,7 +25,9 @@
   .dev { display:block; margin-top:4px; font-size:12px; color:var(--muted); }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:10px; }
   .row > * { flex:1 1 160px; }
-  .tune[hidden] { display:none; }
+  .comp { display:grid; grid-template-columns:1fr 2fr 120px; gap:12px; margin-bottom:12px; }
+  .comp .dev { grid-column:1/-1; margin-top:-6px; }
+  @media (max-width:640px) { .comp { grid-template-columns:1fr; } }
   .warn { background:#fef3c7; color:#78350f; padding:10px 14px; border-radius:8px; margin-bottom:14px; }
   #status { color:var(--muted); font-size:13px; }
   #msg { margin:10px 0 0; font-size:14px; min-height:1.2em; }
@@ -44,21 +46,21 @@
 
 <section class="card">
   <h2>Models</h2>
+  <div class="comp">
+    <label>Speech-to-text engine<select id="sel-stt"></select></label>
+    <label>Model <small>(pick, or type a size / HF id / local path, then Enter)</small><input id="model-stt" list="dl-stt" autocomplete="off"><datalist id="dl-stt"></datalist></label>
+    <label>Device<select id="devsel-stt"></select></label>
+    <small class="dev" id="dev-stt"></small>
+  </div>
+  <div class="comp">
+    <label>Speaker encoder<select id="sel-speaker"></select></label>
+    <label>Model <small>(pick, or type a size / HF id / local path, then Enter)</small><input id="model-speaker" list="dl-speaker" autocomplete="off"><datalist id="dl-speaker"></datalist></label>
+    <label>Device<select id="devsel-speaker"></select></label>
+    <small class="dev" id="dev-speaker"></small>
+  </div>
   <div class="grid">
-    <label>Speech-to-text (preset / backend)<select id="sel-stt"></select><small class="dev" id="dev-stt"></small></label>
-    <label>Speaker encoder (preset / backend)<select id="sel-speaker"></select><small class="dev" id="dev-speaker"></small></label>
     <label>VAD<select id="sel-vad"></select><small class="dev" id="dev-vad"></small></label>
     <label>Denoiser<select id="sel-denoiser"></select><small class="dev" id="dev-denoiser"></small></label>
-  </div>
-  <div class="row tune" id="tune-stt">
-    <label>STT model (type a size / HF id / local path)<input id="model-stt" list="dl-stt"><datalist id="dl-stt"></datalist></label>
-    <label style="flex:0 1 140px">STT device<select id="devsel-stt"></select></label>
-    <button id="apply-stt" class="secondary" style="flex:0 0 auto">Apply STT</button>
-  </div>
-  <div class="row tune" id="tune-speaker">
-    <label>Speaker model<input id="model-speaker" list="dl-speaker"><datalist id="dl-speaker"></datalist></label>
-    <label style="flex:0 1 140px">Speaker device<select id="devsel-speaker"></select></label>
-    <button id="apply-speaker" class="secondary" style="flex:0 0 auto">Apply speaker</button>
   </div>
   <div class="grid" style="margin-top:12px">
     <label>Language hint (blank = auto)<input id="lang" placeholder="en, zh, ms, ta …"></label>
@@ -114,9 +116,19 @@ const say = (t, bad) => { $('msg').textContent = t; $('msg').style.color = bad ?
 let state = null, devPolls = 0;
 const KINDS = ['stt', 'speaker', 'vad', 'denoiser'];
 
+const TUNABLE = ['stt', 'speaker'];   // engine select + model + device
+const BUSY = () => KINDS.forEach(k => { $('sel-' + k).disabled = busy; if (TUNABLE.includes(k)) { $('model-' + k).disabled = busy; } });
+let busy = false;
+const setBusy = b => { busy = b; BUSY(); };
+
 function fillSelect(kind) {
   const sel = $('sel-' + kind), active = state.active[kind];
   sel.innerHTML = '';
+  if (TUNABLE.includes(kind)) {              // engines only; model + device are separate fields
+    for (const n of state.available[kind]) sel.append(new Option(n, 'name:' + n));
+    sel.value = 'name:' + active.name;
+    return;
+  }
   const presets = state.presets[kind] || {};
   if (Object.keys(presets).length) {
     const g = document.createElement('optgroup'); g.label = 'Presets';
@@ -130,36 +142,37 @@ function fillSelect(kind) {
 }
 
 function fillTune(kind) {
-  const act = state.active[kind], info = (state.backend_ui[kind] || {})[act.name], row = $('tune-' + kind);
-  row.hidden = !info;
-  if (!info) return;
-  const params = act.params || {};
-  if (document.activeElement !== $('model-' + kind)) $('model-' + kind).value = params[info.model_param] || '';
+  const act = state.active[kind], info = (state.backend_ui[kind] || {})[act.name];
+  const m = $('model-' + kind), ds = $('devsel-' + kind), params = act.params || {};
+  m.disabled = !info; ds.disabled = !info || !info.devices;
+  ds.innerHTML = '';
+  for (const d of (info && info.devices) || ['n/a']) ds.append(new Option(d, d));
   const dl = $('dl-' + kind); dl.innerHTML = '';
-  for (const m of info.models) dl.append(new Option(m));
-  const ds = $('devsel-' + kind); ds.innerHTML = '';
-  ds.disabled = !info.devices;
-  for (const d of (info.devices || ['n/a'])) ds.append(new Option(d, d));
+  if (!info) { m.value = ''; m.placeholder = 'set in config.yaml'; return; }
+  for (const x of info.models) dl.append(new Option(x));
+  if (document.activeElement !== m) m.value = params[info.model_param] || '';
   if (info.devices) ds.value = info.devices.includes(params.device) ? params.device : 'auto';
 }
 
-for (const kind of ['stt', 'speaker']) {
-  $('apply-' + kind).onclick = async () => {
+async function applySelection(kind, body) {
+  setBusy(true);
+  setStatus(`loading ${kind} model… (first use may download it)`);
+  try { await api('/api/select', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); }
+  catch (e) { alert(e.message); }
+  setBusy(false);
+  await refresh();
+}
+
+for (const kind of TUNABLE) {
+  const apply = () => {
     const act = state.active[kind], info = state.backend_ui[kind][act.name];
-    const params = Object.assign({}, act.params);
-    const model = $('model-' + kind).value.trim();
+    const params = Object.assign({}, act.params), model = $('model-' + kind).value.trim();
     if (model) params[info.model_param] = model;
     if (info.devices) params.device = $('devsel-' + kind).value;
-    KINDS.forEach(k => $('sel-' + k).disabled = true);
-    $('apply-' + kind).disabled = true;
-    setStatus(`loading ${kind} model… (first use may download it)`);
-    try { await api('/api/select', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                    body: JSON.stringify({kind, name: act.name, params})}); }
-    catch (e) { alert(e.message); }
-    $('apply-' + kind).disabled = false;
-    KINDS.forEach(k => $('sel-' + k).disabled = false);
-    await refresh();
+    applySelection(kind, {kind, name: act.name, params});
   };
+  $('model-' + kind).onchange = apply;
+  $('devsel-' + kind).onchange = apply;
 }
 
 function fillProfiles() {
@@ -186,15 +199,14 @@ async function refresh() {
 }
 
 for (const kind of KINDS) {
-  $('sel-' + kind).onchange = async () => {
+  $('sel-' + kind).onchange = () => {
     const v = $('sel-' + kind).value, body = {kind};
-    if (v.startsWith('preset:')) body.preset = v.slice(7); else body.name = v.slice(5);
-    KINDS.forEach(k => $('sel-' + k).disabled = true);
-    setStatus(`loading ${kind} model… (first use may download it)`);
-    try { await api('/api/select', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); }
-    catch (e) { alert(e.message); }
-    KINDS.forEach(k => $('sel-' + k).disabled = false);
-    await refresh();
+    if (TUNABLE.includes(kind)) {           // new engine: start from the first config preset that uses it
+      body.name = v.slice(5);
+      const tpl = Object.values(state.preset_specs[kind] || {}).find(x => x.name === body.name);
+      body.params = tpl ? Object.assign({}, tpl.params) : {};
+    } else if (v.startsWith('preset:')) body.preset = v.slice(7); else body.name = v.slice(5);
+    applySelection(kind, body);
   };
 }
 
