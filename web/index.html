@@ -25,6 +25,7 @@
   .dev { display:block; margin-top:4px; font-size:12px; color:var(--muted); }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:10px; }
   .row > * { flex:1 1 160px; }
+  .tune[hidden] { display:none; }
   .warn { background:#fef3c7; color:#78350f; padding:10px 14px; border-radius:8px; margin-bottom:14px; }
   #status { color:var(--muted); font-size:13px; }
   #msg { margin:10px 0 0; font-size:14px; min-height:1.2em; }
@@ -44,10 +45,20 @@
 <section class="card">
   <h2>Models</h2>
   <div class="grid">
-    <label>Speech-to-text<select id="sel-stt"></select><small class="dev" id="dev-stt"></small></label>
-    <label>Speaker encoder<select id="sel-speaker"></select><small class="dev" id="dev-speaker"></small></label>
+    <label>Speech-to-text (preset / backend)<select id="sel-stt"></select><small class="dev" id="dev-stt"></small></label>
+    <label>Speaker encoder (preset / backend)<select id="sel-speaker"></select><small class="dev" id="dev-speaker"></small></label>
     <label>VAD<select id="sel-vad"></select><small class="dev" id="dev-vad"></small></label>
     <label>Denoiser<select id="sel-denoiser"></select><small class="dev" id="dev-denoiser"></small></label>
+  </div>
+  <div class="row tune" id="tune-stt">
+    <label>STT model (type a size / HF id / local path)<input id="model-stt" list="dl-stt"><datalist id="dl-stt"></datalist></label>
+    <label style="flex:0 1 140px">STT device<select id="devsel-stt"></select></label>
+    <button id="apply-stt" class="secondary" style="flex:0 0 auto">Apply STT</button>
+  </div>
+  <div class="row tune" id="tune-speaker">
+    <label>Speaker model<input id="model-speaker" list="dl-speaker"><datalist id="dl-speaker"></datalist></label>
+    <label style="flex:0 1 140px">Speaker device<select id="devsel-speaker"></select></label>
+    <button id="apply-speaker" class="secondary" style="flex:0 0 auto">Apply speaker</button>
   </div>
   <div class="grid" style="margin-top:12px">
     <label>Language hint (blank = auto)<input id="lang" placeholder="en, zh, ms, ta …"></label>
@@ -118,6 +129,39 @@ function fillSelect(kind) {
   sel.value = active.preset ? 'preset:' + active.preset : 'name:' + active.name;
 }
 
+function fillTune(kind) {
+  const act = state.active[kind], info = (state.backend_ui[kind] || {})[act.name], row = $('tune-' + kind);
+  row.hidden = !info;
+  if (!info) return;
+  const params = act.params || {};
+  if (document.activeElement !== $('model-' + kind)) $('model-' + kind).value = params[info.model_param] || '';
+  const dl = $('dl-' + kind); dl.innerHTML = '';
+  for (const m of info.models) dl.append(new Option(m));
+  const ds = $('devsel-' + kind); ds.innerHTML = '';
+  ds.disabled = !info.devices;
+  for (const d of (info.devices || ['n/a'])) ds.append(new Option(d, d));
+  if (info.devices) ds.value = info.devices.includes(params.device) ? params.device : 'auto';
+}
+
+for (const kind of ['stt', 'speaker']) {
+  $('apply-' + kind).onclick = async () => {
+    const act = state.active[kind], info = state.backend_ui[kind][act.name];
+    const params = Object.assign({}, act.params);
+    const model = $('model-' + kind).value.trim();
+    if (model) params[info.model_param] = model;
+    if (info.devices) params.device = $('devsel-' + kind).value;
+    KINDS.forEach(k => $('sel-' + k).disabled = true);
+    $('apply-' + kind).disabled = true;
+    setStatus(`loading ${kind} model… (first use may download it)`);
+    try { await api('/api/select', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({kind, name: act.name, params})}); }
+    catch (e) { alert(e.message); }
+    $('apply-' + kind).disabled = false;
+    KINDS.forEach(k => $('sel-' + k).disabled = false);
+    await refresh();
+  };
+}
+
 function fillProfiles() {
   const sel = $('sel-profile'), prev = sel.value;
   sel.innerHTML = '';
@@ -129,6 +173,7 @@ function fillProfiles() {
 async function refresh() {
   state = await api('/api/state');
   KINDS.forEach(fillSelect);
+  ['stt', 'speaker'].forEach(fillTune);
   fillProfiles();
   KINDS.forEach(k => { $('dev-' + k).textContent = state.devices[k] ? 'running on: ' + state.devices[k] : 'loading model…'; });
   // models load in the background at start-up: re-check until every one reports its device

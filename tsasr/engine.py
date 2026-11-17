@@ -19,6 +19,33 @@ from .profiles import ProfileStore
 from .registry import KINDS
 
 
+# What the web UI offers for tweaking a backend's model / device after picking it.
+# model_param = name of the constructor argument holding the model; models = suggestions
+# (any other id or local path can be typed); devices = valid `device` values (None = no device option).
+_DEV = ["auto", "cpu", "cuda", "xpu", "mps"]
+BACKEND_UI = {
+    "stt": {
+        "faster_whisper": {"model_param": "model_size_or_path", "devices": ["auto", "cpu", "cuda"],
+                           "models": ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo",
+                                      "distil-large-v3"]},
+        "mlx_whisper": {"model_param": "model", "devices": None,
+                        "models": ["mlx-community/whisper-small-mlx", "mlx-community/whisper-large-v3-mlx",
+                                   "mlx-community/whisper-large-v3-turbo"]},
+        "funasr": {"model_param": "model", "devices": _DEV,
+                   "models": ["iic/SenseVoiceSmall", "paraformer-zh"]},
+        "hf_transformers": {"model_param": "model", "devices": _DEV,
+                            "models": ["openai/whisper-tiny", "openai/whisper-base", "openai/whisper-small",
+                                       "openai/whisper-medium", "openai/whisper-large-v3",
+                                       "facebook/mms-1b-all"]},
+        "openai_http": {"model_param": "model", "devices": None, "models": ["whisper-1"]},
+    },
+    "speaker": {
+        "speechbrain_ecapa": {"model_param": "source", "devices": _DEV,
+                              "models": ["speechbrain/spkrec-ecapa-voxceleb"]},
+    },
+}
+
+
 class Engine:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -177,6 +204,7 @@ class Engine:
             "available": {k: registry.available(k) for k in KINDS},
             "presets": {k: {key: v.get("label", key) for key, v in (presets_cfg.get(k) or {}).items()}
                         for k in KINDS},
+            "backend_ui": BACKEND_UI,
             "profiles": self.store.list(),
             "pipeline": dataclasses.asdict(self.defaults),
             # where each loaded model actually runs (None = not loaded yet)
