@@ -38,6 +38,21 @@ Add optional backends by listing more extras **in the same command** - `uv sync`
 uv sync --extra cu128 --extra funasr --extra hf          # + SenseVoice/Paraformer + MMS/HF models
 ```
 
+**Install every backend** (so every engine in the web UI works). Pick your hardware extra and add all optional ones:
+
+```bash
+# Windows / Linux, NVIDIA (use cu126 for older drivers)
+uv sync --extra cu128 --extra funasr --extra hf --extra sherpa --extra onnx
+# Apple Silicon Mac (adds mlx_whisper)
+uv sync --extra apple --extra funasr --extra hf --extra sherpa --extra onnx --extra mlx
+# No GPU
+uv sync --extra cpu --extra funasr --extra hf --extra sherpa --extra onnx
+```
+
+If the UI shows `No module named 'xxx'` when you pick an engine, its extra is not installed:
+`transformers` -> `hf`, `funasr` -> `funasr`, `sherpa_onnx` -> `sherpa`, `mlx_whisper` -> `mlx`.
+Re-run `uv sync` with the full list of extras you want (it removes anything left out).
+
 Extras: `funasr`, `hf`, `sherpa`, `onnx`, `mlx` (Apple only). `deepfilternet` isn't an extra:
 `uv pip install deepfilternet`, then run with `uv run --no-sync …`.
 
