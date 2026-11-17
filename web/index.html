@@ -135,9 +135,11 @@ function fillSelect(kind) {
     for (const [key, label] of Object.entries(presets)) g.append(new Option(label, 'preset:' + key));
     sel.append(g);
   }
-  const g2 = document.createElement('optgroup'); g2.label = 'Backends (default params)';
-  for (const n of state.available[kind]) g2.append(new Option(n, 'name:' + n));
-  sel.append(g2);
+  if (!Object.keys(presets).length || !active.preset) {   // presets are the whole story for VAD / denoiser
+    const g2 = document.createElement('optgroup'); g2.label = 'Backends (default params)';
+    for (const n of state.available[kind]) g2.append(new Option(n, 'name:' + n));
+    sel.append(g2);
+  }
   sel.value = active.preset ? 'preset:' + active.preset : 'name:' + active.name;
 }
 
@@ -172,6 +174,10 @@ for (const kind of TUNABLE) {
     applySelection(kind, {kind, name: act.name, params});
   };
   $('model-' + kind).onchange = apply;
+  // a <datalist> only lists suggestions matching what is typed: blank the box on focus so all show
+  let prev = '';
+  $('model-' + kind).onfocus = e => { prev = e.target.value; e.target.placeholder = prev; e.target.value = ''; };
+  $('model-' + kind).onblur = e => { if (!e.target.value.trim()) e.target.value = prev; };
   $('devsel-' + kind).onchange = apply;
 }
 
