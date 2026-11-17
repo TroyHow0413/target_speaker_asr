@@ -3,6 +3,10 @@
 # Every component is a *preset* (name + params). Pick which one starts active
 # under `use:`; the tablet UI can switch between presets at runtime.
 # Add your own presets freely - a preset is just {name: <backend>, params: {...}}.
+#
+# device: auto   tries NVIDIA -> AMD -> Intel -> Apple -> CPU (whatever your installed torch
+#                build supports) and falls back to the next one if a model fails to load/run.
+#                Or force one: cpu | cuda | cuda:1 | xpu | mps   (forced = no silent fallback)
 # ---------------------------------------------------------------------------
 
 server:
@@ -42,11 +46,11 @@ pipeline:
 presets:
   vad:
     silero:
-      label: "Silero VAD (recommended)"
+      label: "Silero VAD (recommended; always CPU - it is tiny)"
       name: silero
       params: {onnx: false}
     silero_onnx:
-      label: "Silero VAD (ONNX runtime, no torch needed)"
+      label: "Silero VAD (ONNX runtime, needs the `onnx` extra)"
       name: silero
       params: {onnx: true}
     energy:
@@ -61,9 +65,9 @@ presets:
       params:
         source: speechbrain/spkrec-ecapa-voxceleb
         savedir: models/spkrec-ecapa-voxceleb
-        device: cpu
+        device: auto
     sherpa_3dspeaker:
-      label: "3D-Speaker ERes2Net via sherpa-onnx (download the .onnx first)"
+      label: "3D-Speaker ERes2Net via sherpa-onnx (download the .onnx first; CPU)"
       name: sherpa_onnx
       params:
         model: models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx
@@ -71,33 +75,41 @@ presets:
 
   stt:
     whisper_small:
-      label: "Whisper small - multilingual, CPU int8"
+      label: "Whisper small - multilingual (NVIDIA GPU or CPU)"
       name: faster_whisper
-      params: {model_size_or_path: small, device: cpu, compute_type: int8}
+      params: {model_size_or_path: small, device: auto, compute_type: auto}
     whisper_base:
       label: "Whisper base - faster, less accurate"
       name: faster_whisper
-      params: {model_size_or_path: base, device: cpu, compute_type: int8}
+      params: {model_size_or_path: base, device: auto, compute_type: auto}
     whisper_large_v3:
-      label: "Whisper large-v3 - best Whisper accuracy, slow on CPU"
+      label: "Whisper large-v3 - best Whisper accuracy (wants a GPU)"
       name: faster_whisper
-      params: {model_size_or_path: large-v3, device: cpu, compute_type: int8}
+      params: {model_size_or_path: large-v3, device: auto, compute_type: auto}
+    mlx_whisper_small:
+      label: "Whisper small on Apple GPU (MLX, Apple Silicon only)"
+      name: mlx_whisper
+      params: {model: mlx-community/whisper-small-mlx}
+    mlx_whisper_large_v3:
+      label: "Whisper large-v3 on Apple GPU (MLX, Apple Silicon only)"
+      name: mlx_whisper
+      params: {model: mlx-community/whisper-large-v3-mlx}
     sensevoice_funasr:
       label: "SenseVoice-Small (FunASR) - zh / yue / en / ja / ko"
       name: funasr
-      params: {model: iic/SenseVoiceSmall, device: cpu}
+      params: {model: iic/SenseVoiceSmall, device: auto}
     paraformer_zh:
       label: "Paraformer (FunASR) - Mandarin"
       name: funasr
-      params: {model: paraformer-zh, device: cpu}
+      params: {model: paraformer-zh, device: auto}
     mms_1b_all:
-      label: "MMS-1B-all (HF) - 1100+ languages; set language hint to ISO-639-3 e.g. eng, zsm, cmn"
+      label: "MMS-1B-all (HF) - 1100+ languages; language hint = ISO-639-3 e.g. eng, zsm, cmn"
       name: hf_transformers
-      params: {model: facebook/mms-1b-all, device: cpu}
+      params: {model: facebook/mms-1b-all, device: auto}
     hf_whisper_custom:
       label: "HF Whisper fine-tune (edit the model id in config.yaml)"
       name: hf_transformers
-      params: {model: openai/whisper-small, device: cpu}
+      params: {model: openai/whisper-small, device: auto}
     sherpa_sensevoice:
       label: "SenseVoice int8 via sherpa-onnx (download model first; lightest CPU option)"
       name: sherpa_onnx
@@ -108,7 +120,7 @@ presets:
         num_threads: 4
         use_itn: true
     local_http_server:
-      label: "Local OpenAI-compatible STT server (whisper.cpp / speaches / ...)"
+      label: "Local OpenAI-compatible STT server (whisper.cpp Vulkan = AMD/Intel/NVIDIA GPU on Windows)"
       name: openai_http
       params: {base_url: "http://127.0.0.1:8080", model: whisper-1}
 
@@ -117,6 +129,6 @@ presets:
       label: "Off (recommended first)"
       name: none
     deepfilternet:
-      label: "DeepFilterNet (heavy noise only - A/B test it)"
+      label: "DeepFilterNet (heavy noise only - A/B test it; picks its own device)"
       name: deepfilternet
       params: {post_filter: false}

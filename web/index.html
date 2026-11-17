@@ -22,6 +22,7 @@
   button.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); }
   button.danger { background:var(--bad); }
   button:disabled { opacity:.5; }
+  .dev { display:block; margin-top:4px; font-size:12px; color:var(--muted); }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:10px; }
   .row > * { flex:1 1 160px; }
   .warn { background:#fef3c7; color:#78350f; padding:10px 14px; border-radius:8px; margin-bottom:14px; }
@@ -43,10 +44,10 @@
 <section class="card">
   <h2>Models</h2>
   <div class="grid">
-    <label>Speech-to-text<select id="sel-stt"></select></label>
-    <label>Speaker encoder<select id="sel-speaker"></select></label>
-    <label>VAD<select id="sel-vad"></select></label>
-    <label>Denoiser<select id="sel-denoiser"></select></label>
+    <label>Speech-to-text<select id="sel-stt"></select><small class="dev" id="dev-stt"></small></label>
+    <label>Speaker encoder<select id="sel-speaker"></select><small class="dev" id="dev-speaker"></small></label>
+    <label>VAD<select id="sel-vad"></select><small class="dev" id="dev-vad"></small></label>
+    <label>Denoiser<select id="sel-denoiser"></select><small class="dev" id="dev-denoiser"></small></label>
   </div>
   <div class="grid" style="margin-top:12px">
     <label>Language hint (blank = auto)<input id="lang" placeholder="en, zh, ms, ta …"></label>
@@ -99,7 +100,7 @@ const setStatus = t => $('status').textContent = t;
 const say = (t, bad) => { $('msg').textContent = t; $('msg').style.color = bad ? 'var(--bad)' : 'var(--fg)'; };
 
 /* ---------------- model / profile selectors ---------------- */
-let state = null;
+let state = null, devPolls = 0;
 const KINDS = ['stt', 'speaker', 'vad', 'denoiser'];
 
 function fillSelect(kind) {
@@ -129,6 +130,9 @@ async function refresh() {
   state = await api('/api/state');
   KINDS.forEach(fillSelect);
   fillProfiles();
+  KINDS.forEach(k => { $('dev-' + k).textContent = state.devices[k] ? 'running on: ' + state.devices[k] : 'loading model…'; });
+  // models load in the background at start-up: re-check until every one reports its device
+  if (KINDS.some(k => !state.devices[k]) && devPolls++ < 40) setTimeout(() => refresh().catch(() => {}), 3000);
   if (document.activeElement !== $('thr')) {
     $('thr').value = state.pipeline.similarity_threshold;
     $('thr-out').textContent = (+$('thr').value).toFixed(2);

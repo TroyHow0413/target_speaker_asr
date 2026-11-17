@@ -31,6 +31,7 @@ class SherpaOnnxSTT(STT):
             raise ValueError(f"sherpa_onnx.OfflineRecognizer has no factory from_{kind}")
         resolved = {k: (resolve_path(v) if k in _PATH_KEYS and isinstance(v, str) else v)
                     for k, v in params.items()}
+        self.device = str(params.get("provider", "cpu"))  # CUDA/CoreML need a matching sherpa-onnx build
         self.rec = factory(**resolved)
 
     def transcribe(self, audio: np.ndarray, language: Optional[str] = None) -> Transcript:

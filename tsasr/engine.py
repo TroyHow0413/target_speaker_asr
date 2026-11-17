@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import logging
 import threading
 from typing import Dict, Optional
 
@@ -12,6 +13,7 @@ from . import backends  # noqa: F401  (registers built-in backends)
 from . import registry
 from .base import SAMPLE_RATE
 from .config import resolve_path
+from .device import describe_device, hardware_summary
 from .pipeline import Pipeline, PipelineParams, extract_speech
 from .profiles import ProfileStore
 from .registry import KINDS
@@ -79,6 +81,7 @@ class Engine:
         return registry.create("vad", s["name"], s["params"])  # stateful -> one per session
 
     def warmup(self) -> None:
+        logging.getLogger("tsasr.engine").info("detected hardware: %s", hardware_summary())
         for kind in KINDS:
             self.get(kind)
 
@@ -176,4 +179,8 @@ class Engine:
                         for k in KINDS},
             "profiles": self.store.list(),
             "pipeline": dataclasses.asdict(self.defaults),
+            # where each loaded model actually runs (None = not loaded yet)
+            "devices": {k: (describe_device(getattr(self._inst[k], "device", "cpu")) if k in self._inst else None)
+                        for k in KINDS},
+            "hardware": hardware_summary(),
         }

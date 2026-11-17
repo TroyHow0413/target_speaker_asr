@@ -10,6 +10,7 @@ from . import (  # noqa: F401
     stt_faster_whisper,
     stt_funasr,
     stt_hf,
+    stt_mlx_whisper,
     stt_openai_http,
     stt_sherpa,
     vad_energy,

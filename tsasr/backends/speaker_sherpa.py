@@ -21,6 +21,7 @@ class SherpaSpeakerEncoder(SpeakerEncoder):
         import sherpa_onnx
 
         self._model_name = Path(model).stem
+        self.device = provider  # default pip wheel is CPU-only; CUDA needs the separate "+cuda" sherpa-onnx wheel
         cfg = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=resolve_path(model), num_threads=num_threads, debug=False, provider=provider)
         self.extractor = sherpa_onnx.SpeakerEmbeddingExtractor(cfg)

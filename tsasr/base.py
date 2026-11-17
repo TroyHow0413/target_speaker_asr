@@ -20,6 +20,7 @@ class Transcript:
 class Component(ABC):
     registry_kind = ""
     registry_name = ""
+    device: str = "cpu"  # backends set this to where the model actually runs
 
     def close(self) -> None:  # optional cleanup
         pass
