@@ -46,13 +46,13 @@ pipeline:
 presets:
   vad:
     silero:
-      label: "Silero VAD (recommended; always CPU - it is tiny)"
-      name: silero
-      params: {onnx: false}
-    silero_onnx:
-      label: "Silero VAD (ONNX runtime, needs the `onnx` extra)"
+      label: "Silero VAD, ONNX single-thread (recommended; always CPU - it is tiny)"
       name: silero
       params: {onnx: true}
+    silero_torch:
+      label: "Silero VAD, TorchScript (slower; caps PyTorch to 1 thread)"
+      name: silero
+      params: {onnx: false, torch_threads: 1}
     energy:
       label: "Energy gate (no dependencies, quiet rooms only)"
       name: energy

@@ -42,18 +42,18 @@ uv sync --extra cu128 --extra funasr --extra hf          # + SenseVoice/Paraform
 
 ```bash
 # Windows / Linux, NVIDIA (use cu126 for older drivers)
-uv sync --extra cu128 --extra funasr --extra hf --extra sherpa --extra onnx
+uv sync --extra cu128 --extra funasr --extra hf --extra sherpa
 # Apple Silicon Mac (adds mlx_whisper)
-uv sync --extra apple --extra funasr --extra hf --extra sherpa --extra onnx --extra mlx
+uv sync --extra apple --extra funasr --extra hf --extra sherpa --extra mlx
 # No GPU
-uv sync --extra cpu --extra funasr --extra hf --extra sherpa --extra onnx
+uv sync --extra cpu --extra funasr --extra hf --extra sherpa
 ```
 
 If the UI shows `No module named 'xxx'` when you pick an engine, its extra is not installed:
 `transformers` -> `hf`, `funasr` -> `funasr`, `sherpa_onnx` -> `sherpa`, `mlx_whisper` -> `mlx`.
 Re-run `uv sync` with the full list of extras you want (it removes anything left out).
 
-Extras: `funasr`, `hf`, `sherpa`, `onnx`, `mlx` (Apple only). `deepfilternet` isn't an extra:
+Extras: `funasr`, `hf`, `sherpa`, `mlx` (Apple only). `onnxruntime` is a core dependency (Silero VAD uses it). `deepfilternet` isn't an extra:
 `uv pip install deepfilternet`, then run with `uv run --no-sync …`.
 
 ## Run
@@ -89,7 +89,7 @@ What each backend can actually accelerate:
 | `speechbrain_ecapa`, `funasr`, `hf_transformers` (PyTorch) | ✅ `cuda` | ✅ ROCm (Linux) | ✅ `xpu` | ⚠️ `mps` (some ops may be unsupported → falls back to CPU) |
 | `openai_http` + [whisper.cpp](https://github.com/ggml-org/whisper.cpp) server | ✅ | ✅ Vulkan | ✅ Vulkan | ✅ Metal |
 | `sherpa_onnx` | CUDA needs the separate `+cuda` sherpa-onnx wheel | CPU | CPU | CPU |
-| `silero` VAD | CPU always - it is tiny and slower on a GPU | | | |
+| `silero` VAD | CPU always, via single-thread ONNX. (The TorchScript variant is far slower on many-core CPUs: PyTorch spreads its tiny ops over every core.) | | | |
 
 Practical recommendations:
 

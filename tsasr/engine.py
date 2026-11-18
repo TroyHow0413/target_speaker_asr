@@ -5,6 +5,7 @@ import dataclasses
 import importlib
 import logging
 import threading
+import time
 from typing import Dict, Optional
 
 import numpy as np
@@ -85,8 +86,12 @@ class Engine:
                 inst = self._inst.get(kind)
                 if inst is None:
                     s = self.specs[kind]
+                    log = logging.getLogger("tsasr.engine")
+                    log.info("loading %s: %s %s ...", kind, s["name"], s["params"])
+                    t0 = time.perf_counter()
                     inst = registry.create(kind, s["name"], s["params"])
                     self._inst[kind] = inst
+                    log.info("loaded %s in %.1fs on %s", kind, time.perf_counter() - t0, describe_device(inst.device))
         return inst
 
     def select(self, kind: str, preset: Optional[str] = None, name: Optional[str] = None,

@@ -17,6 +17,7 @@ dependencies = [
   "requests",
   "cryptography",       # only for scripts/make_cert.py
   "silero-vad",         # default VAD
+  "onnxruntime",        # runs Silero single-threaded (the TorchScript model is very slow on many-core CPUs)
   "speechbrain",        # default speaker encoder (ECAPA-TDNN)
   "faster-whisper",     # default STT (CTranslate2: CUDA or CPU)
 ]
@@ -34,7 +35,6 @@ apple = ["torch>=2.7", "torchaudio>=2.7"]   # Apple Silicon: the normal PyPI mac
 funasr = ["funasr", "modelscope"]                                   # stt: funasr (SenseVoice / Paraformer)
 hf     = ["transformers", "accelerate"]                            # stt: hf_transformers (MMS, Whisper fine-tunes ...)
 sherpa = ["sherpa-onnx"]                                            # stt/speaker: sherpa_onnx
-onnx   = ["onnxruntime"]                                            # vad: silero_onnx preset
 mlx    = ["mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'"]  # stt: mlx_whisper
 # deepfilternet is not an extra (its wheels are picky): `uv pip install deepfilternet`, then `uv run --no-sync ...`
 
