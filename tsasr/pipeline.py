@@ -168,6 +168,10 @@ class Pipeline:
     def flush(self) -> List[dict]:
         return self._handle(self.seg.flush()) + [{"type": "flushed"}]
 
+    def process_audio(self, audio: np.ndarray) -> List[dict]:
+        """Offline use: run a whole clip (mono float32 @ 16 kHz) through VAD -> verify -> STT."""
+        return self._handle(self.seg.feed(audio) + self.seg.flush())
+
     # ---- internals ------------------------------------------------------
     def _handle(self, events: list) -> List[dict]:
         out: List[dict] = []

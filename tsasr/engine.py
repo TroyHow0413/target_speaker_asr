@@ -222,6 +222,12 @@ class Engine:
             self._emb_cache[key] = emb
         return emb
 
+    def refresh_profile(self, pid: str) -> None:
+        """Drop the cached embedding so it is re-read from disk (another process may have re-enrolled)."""
+        with self._lock:
+            for k in [k for k in self._emb_cache if k[0] == pid]:
+                del self._emb_cache[k]
+
     def delete_profile(self, pid: str) -> None:
         with self._lock:
             self.store.delete(pid)

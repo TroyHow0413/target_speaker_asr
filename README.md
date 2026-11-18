@@ -73,6 +73,25 @@ On the tablet (same Wi-Fi) open `https://<PC-LAN-IP>:8000`, accept the certifica
 PC only (no tablet): remove the `ssl_*` lines in `config.yaml` and use `http://localhost:8000`.
 Allow inbound port 8000 in Windows Firewall for the tablet. Set `server.token` and open `https://…:8000/?token=<value>` on shared networks.
 
+## OpenAI-compatible API (for chat apps)
+
+A second entry point that exposes the same target-speaker pipeline as `POST /v1/audio/transcriptions`,
+so any app with a "custom OpenAI STT endpoint" setting (Open WebUI, Cherry Studio, …) can use it as its
+microphone. Audio from other speakers is dropped on the server; the client never knows.
+
+```powershell
+uv run python run_server_openai.py --profile alice          # http://<PC-IP>:8001/v1
+```
+
+* Enroll the voice first with the web UI (`run_server.py`) or `scripts/cli.py enroll`. Profiles are shared on disk.
+* **Client settings:** base URL `http://<PC-IP>:8001/v1`, API key = `server.token` (anything if no token), model = `tsasr-alice`
+  (or `alice`). Any other model name (e.g. `whisper-1`) uses `--profile` / `openai.default_profile`. `GET /v1/models` lists profiles.
+* `response_format`: `json`, `text`, `verbose_json` (adds per-segment scores and the rejected segments). Not streaming: the
+  client uploads a finished clip. Browser-recorded clips (webm/opus) need `ffmpeg` on the PATH.
+* Plain HTTP by default (chat backends call it server-to-server; the browser mic permission belongs to the chat page). Use `--ssl`
+  to serve the certificate from `scripts/make_cert.py`. Port, default profile and concurrency: `openai:` in `config.yaml`.
+* It loads its own copy of the models, so running it next to `run_server.py` uses roughly twice the (V)RAM. Stop one if memory is tight.
+
 ## Hardware auto-detection
 
 `device: auto` (the default in every preset) tries, in order **NVIDIA → AMD → Intel → Apple → CPU**.
