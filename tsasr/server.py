@@ -5,8 +5,11 @@ import asyncio
 import json
 import logging
 import queue
+import os
+import tempfile
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import uvicorn
@@ -18,6 +21,7 @@ from pydantic import BaseModel
 
 from .audio import load_audio_bytes
 from .config import ROOT, load_config, resolve_path
+from .custom_models import extract_model_zip
 from .engine import Engine
 
 log = logging.getLogger("tsasr")
@@ -63,7 +67,11 @@ def create_app(cfg: dict) -> FastAPI:
     @app.post("/api/select", dependencies=[Depends(auth)])
     async def select(body: SelectBody):
         try:
-            await run_in_threadpool(engine.select, body.kind, body.preset, body.name, body.params)
+            params = None
+            if body.preset is None and body.name is not None:
+                # the browser may only choose model + device; everything else comes from config.yaml
+                params = engine.client_params(body.kind, body.name, body.params)
+            await run_in_threadpool(engine.select, body.kind, body.preset, body.name, params)
         except Exception as e:
             log.exception("select failed")
             raise HTTPException(400, f"{type(e).__name__}: {e}")
@@ -91,6 +99,36 @@ def create_app(cfg: dict) -> FastAPI:
             await run_in_threadpool(engine.delete_profile, pid)
         except ValueError as e:
             raise HTTPException(400, str(e))
+        return {"ok": True}
+
+    # ---- user-supplied models -------------------------------------------
+    @app.post("/api/models/upload", dependencies=[Depends(auth)])
+    async def upload_model(name: str = Form(...), file: UploadFile = File(...)):
+        """Upload a Hugging Face model folder zipped (config.json + weights + tokenizer files)."""
+        dest_root = Path(resolve_path(cfg.get("custom_models_dir", "models/custom")))
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+        try:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+            tmp.close()
+            path = await run_in_threadpool(extract_model_zip, tmp.name, dest_root, name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        finally:
+            tmp.close()
+            os.unlink(tmp.name)
+        try:
+            shown = path.relative_to(ROOT).as_posix()
+        except ValueError:
+            shown = str(path)
+        return {"path": shown}
+
+    @app.delete("/api/models/history", dependencies=[Depends(auth)])
+    async def forget_model(model: str = Query(...), backend: str = Query("hf_transformers")):
+        engine.history.remove(backend, model)  # only forgets the entry; files stay on disk
         return {"ok": True}
 
     # ---- live audio ------------------------------------------------------

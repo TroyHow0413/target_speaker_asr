@@ -14,6 +14,7 @@ from . import backends  # noqa: F401  (registers built-in backends)
 from . import registry
 from .base import SAMPLE_RATE
 from .config import resolve_path
+from .custom_models import ModelHistory, check_device, check_hf_model
 from .device import describe_device, hardware_summary
 from .pipeline import Pipeline, PipelineParams, extract_speech
 from .profiles import ProfileStore
@@ -34,7 +35,9 @@ BACKEND_UI = {
                                    "mlx-community/whisper-large-v3-turbo"]},
         "funasr": {"model_param": "model", "devices": _DEV,
                    "models": ["iic/SenseVoiceSmall", "paraformer-zh"]},
-        "hf_transformers": {"model_param": "model", "devices": _DEV,
+        # custom=True: the user brings their own model (type an id / folder, or upload a .zip) and the
+        # models that loaded successfully are remembered ("previously used" in the UI)
+        "hf_transformers": {"model_param": "model", "devices": _DEV, "custom": True,
                             "models": ["openai/whisper-tiny", "openai/whisper-base", "openai/whisper-small",
                                        "openai/whisper-medium", "openai/whisper-large-v3",
                                        "facebook/mms-1b-all"]},
@@ -57,6 +60,7 @@ class Engine:
         self._inst: Dict[str, object] = {}
         self._emb_cache: Dict[tuple, np.ndarray] = {}
         self.store = ProfileStore(resolve_path(cfg.get("profiles_dir", "profiles")))
+        self.history = ModelHistory(resolve_path(cfg.get("history_file", "models/model_history.json")))
         self.defaults = PipelineParams.from_dict(cfg.get("pipeline"))
 
         self.specs: Dict[str, dict] = {}
@@ -107,6 +111,37 @@ class Engine:
             self.specs[kind] = spec
             if kind == "speaker":
                 self._emb_cache.clear()
+        info = BACKEND_UI.get(kind, {}).get(spec["name"], {})
+        model = spec["params"].get(info.get("model_param", ""))
+        if info.get("custom") and model:  # only successful loads get here -> remember them
+            self.history.add(spec["name"], str(model), str(spec["params"].get("device", "auto")))
+
+    def client_params(self, kind: str, name: str, params: Optional[dict]) -> dict:
+        """What a network client may set when it picks an engine: the model and the device, nothing else.
+        All other arguments (compute_type, base_url, trust_remote_code, file paths ...) come from config.yaml:
+        the active params if this engine is already active, otherwise the first preset that uses it."""
+        active = self.specs[kind]  # KeyError for an unknown kind -> reported as a 400
+        if active["name"] == name:
+            base = dict(active["params"])
+        else:
+            presets = (self.cfg.get("presets") or {}).get(kind) or {}
+            base = next((dict(p.get("params") or {}) for p in presets.values() if p["name"] == name), {})
+        info = BACKEND_UI.get(kind, {}).get(name)
+        params = params or {}
+        if info is None:  # not configurable from the UI: keep the config values
+            return base
+        mp = info["model_param"]
+        if mp in params:
+            model = str(params[mp]).strip()
+            if not model or len(model) > 300 or any(ord(c) < 32 for c in model):
+                raise ValueError("Invalid model name.")
+            base[mp] = check_hf_model(model) if info.get("custom") else model
+        if info.get("devices") and "device" in params:
+            dev = check_device(params["device"])
+            if dev.split(":")[0] not in info["devices"]:
+                raise ValueError(f"{name} does not support device {dev!r}")
+            base["device"] = dev
+        return base
 
     def make_vad(self):
         s = self.specs["vad"]
@@ -214,6 +249,7 @@ class Engine:
             "preset_specs": {k: {key: {"name": v["name"], "params": v.get("params") or {}}
                                  for key, v in (presets_cfg.get(k) or {}).items()} for k in KINDS},
             "profiles": self.store.list(),
+            "history": self.history.list(),  # custom models used before (most recent first)
             "pipeline": dataclasses.asdict(self.defaults),
             # where each loaded model actually runs (None = not loaded yet)
             "devices": {k: (describe_device(getattr(self._inst[k], "device", "cpu")) if k in self._inst else None)

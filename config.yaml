@@ -17,6 +17,8 @@ server:
   ssl_keyfile: certs/server.key
 
 profiles_dir: profiles
+custom_models_dir: models/custom           # where uploaded model .zip files are unpacked
+history_file: models/model_history.json    # "previously used" custom models
 plugins: []                        # extra python modules that register your own backends, e.g. ["my_backends"]
 
 enrollment:
@@ -102,14 +104,8 @@ presets:
       label: "Paraformer (FunASR) - Mandarin"
       name: funasr
       params: {model: paraformer-zh, device: auto}
-    mms_1b_all:
-      label: "MMS-1B-all (HF) - 1100+ languages; language hint = ISO-639-3 e.g. eng, zsm, cmn"
-      name: hf_transformers
-      params: {model: facebook/mms-1b-all, device: auto}
-    hf_whisper_custom:
-      label: "HF Whisper fine-tune (edit the model id in config.yaml)"
-      name: hf_transformers
-      params: {model: openai/whisper-small, device: auto}
+    # hf_transformers has no presets on purpose: choose "hf_transformers" in the UI, then type any
+    # Hugging Face id / server folder, pick one from "previously used", or upload a .zip.
     sherpa_sensevoice:
       label: "SenseVoice int8 via sherpa-onnx (download model first; lightest CPU option)"
       name: sherpa_onnx

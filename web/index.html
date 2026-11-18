@@ -27,6 +27,12 @@
   .row > * { flex:1 1 160px; }
   .comp { display:grid; grid-template-columns:1fr 2fr 120px; gap:12px; margin-bottom:12px; }
   .comp .dev { grid-column:1/-1; margin-top:-6px; }
+  .extra { grid-column:1/-1; border-top:1px dashed var(--line); padding-top:10px; }
+  .hist-title { font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  .hrow { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+  .hrow .link { flex:0 1 auto; max-width:60%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:6px 10px; font-size:14px; }
+  .hrow .dev { margin:0; flex:1; }
+  .hrow .x { padding:6px 10px; }
   @media (max-width:640px) { .comp { grid-template-columns:1fr; } }
   .warn { background:#fef3c7; color:#78350f; padding:10px 14px; border-radius:8px; margin-bottom:14px; }
   #status { color:var(--muted); font-size:13px; }
@@ -51,6 +57,15 @@
     <label>Model <small>(pick, or type a size / HF id / local path, then Enter)</small><input id="model-stt" list="dl-stt" autocomplete="off"><datalist id="dl-stt"></datalist></label>
     <label>Device<select id="devsel-stt"></select></label>
     <small class="dev" id="dev-stt"></small>
+    <div class="extra" id="extra-stt" hidden>
+      <div class="row" style="margin-top:0">
+        <label style="flex:2">Upload your own model <small>(a Hugging Face model folder as .zip: config.json + weights + tokenizer files)</small>
+          <input type="file" id="zip-stt" accept=".zip,application/zip"></label>
+        <span class="dev" id="up-msg" style="flex:2"></span>
+      </div>
+      <div class="hist-title">Previously used</div>
+      <div id="hist-stt"></div>
+    </div>
   </div>
   <div class="comp">
     <label>Speaker encoder<select id="sel-speaker"></select></label>
@@ -114,6 +129,7 @@ const say = (t, bad) => { $('msg').textContent = t; $('msg').style.color = bad ?
 
 /* ---------------- model / profile selectors ---------------- */
 let state = null, devPolls = 0;
+const pending = {};   // kind -> engine picked in the UI but not loaded yet (a bring-your-own-model engine waiting for a model)
 const KINDS = ['stt', 'speaker', 'vad', 'denoiser'];
 
 const TUNABLE = ['stt', 'speaker'];   // engine select + model + device
@@ -126,7 +142,7 @@ function fillSelect(kind) {
   sel.innerHTML = '';
   if (TUNABLE.includes(kind)) {              // engines only; model + device are separate fields
     for (const n of state.available[kind]) sel.append(new Option(n, 'name:' + n));
-    sel.value = 'name:' + active.name;
+    sel.value = 'name:' + (pending[kind] || active.name);
     return;
   }
   const presets = state.presets[kind] || {};
@@ -143,42 +159,111 @@ function fillSelect(kind) {
   sel.value = active.preset ? 'preset:' + active.preset : 'name:' + active.name;
 }
 
+const shortModel = m => /^([a-zA-Z]:|\/)/.test(m) ? '…/' + m.split(/[\\/]/).slice(-2).join('/') : m;
+
+// "Previously used" list + upload box, shown for bring-your-own-model engines (info.custom)
+function renderHistory(kind, info, name) {
+  const box = $('extra-' + kind);
+  if (!box) return;
+  box.hidden = !(info && info.custom);
+  if (box.hidden) return;
+  const list = $('hist-' + kind); list.innerHTML = '';
+  const items = (state.history || []).filter(h => h.backend === name);
+  if (!items.length) { list.textContent = 'Nothing yet - models that load successfully are remembered here.'; return; }
+  for (const h of items) {
+    const row = document.createElement('div'), b = document.createElement('button'),
+          meta = document.createElement('span'), x = document.createElement('button');
+    row.className = 'hrow';
+    b.className = 'secondary link'; b.textContent = shortModel(h.model); b.title = h.model + ' - click to load';
+    b.onclick = () => startApply(kind, h.model, h.device);
+    meta.className = 'dev'; meta.textContent = `${h.device} · used ${h.uses}× · ${h.last_used}`;
+    x.className = 'secondary x'; x.textContent = '×'; x.title = 'Forget this entry (files are kept)';
+    x.onclick = async () => {
+      try { await api('/api/models/history?backend=' + encodeURIComponent(h.backend) + '&model=' + encodeURIComponent(h.model), {method: 'DELETE'}); }
+      catch (e) { alert(e.message); }
+      await refresh();
+    };
+    row.append(b, meta, x); list.append(row);
+  }
+}
+
 function fillTune(kind) {
-  const act = state.active[kind], info = (state.backend_ui[kind] || {})[act.name];
-  const m = $('model-' + kind), ds = $('devsel-' + kind), params = act.params || {};
+  const act = state.active[kind], name = pending[kind] || act.name, info = (state.backend_ui[kind] || {})[name];
+  const params = pending[kind] ? {} : (act.params || {});
+  const m = $('model-' + kind), ds = $('devsel-' + kind);
   m.disabled = !info; ds.disabled = !info || !info.devices;
   ds.innerHTML = '';
   for (const d of (info && info.devices) || ['n/a']) ds.append(new Option(d, d));
   const dl = $('dl-' + kind); dl.innerHTML = '';
+  renderHistory(kind, info, name);
   if (!info) { m.value = ''; m.placeholder = 'set in config.yaml'; return; }
-  for (const x of info.models) dl.append(new Option(x));
-  if (document.activeElement !== m) m.value = params[info.model_param] || '';
+  const seen = new Set();
+  if (info.custom) for (const h of (state.history || []).filter(h => h.backend === name)) { seen.add(h.model); dl.append(new Option(h.model)); }
+  for (const x of info.models) if (!seen.has(x)) dl.append(new Option(x));
+  if (document.activeElement !== m && !pending[kind]) m.value = params[info.model_param] || '';
+  if (pending[kind] && !m.value) m.placeholder = 'type a Hugging Face id or folder path, pick from history, or upload a .zip';
   if (info.devices) ds.value = info.devices.includes(params.device) ? params.device : 'auto';
 }
 
 async function applySelection(kind, body) {
   setBusy(true);
   setStatus(`loading ${kind} model… (first use may download it)`);
+  let ok = true;
   try { await api('/api/select', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}); }
-  catch (e) { alert(e.message); }
+  catch (e) { ok = false; alert(e.message); }
+  if (ok) delete pending[kind];
   setBusy(false);
   await refresh();
+  return ok;
 }
 
+// load `model` and/or `device` on the engine currently shown for `kind`
+function startApply(kind, model, device) {
+  const act = state.active[kind], name = pending[kind] || act.name, info = state.backend_ui[kind][name];
+  if (pending[kind] && !model) return Promise.resolve(false);   // engine picked but no model chosen yet
+  const params = Object.assign({}, pending[kind] ? {} : act.params);
+  if (model) params[info.model_param] = model;
+  if (info.devices) params.device = device || $('devsel-' + kind).value;
+  return applySelection(kind, {kind, name, params});
+}
+
+function uploadWithProgress(path, fd, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', path);
+    if (TOKEN) x.setRequestHeader('X-Token', TOKEN);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(Math.round(100 * e.loaded / e.total)); };
+    x.onerror = () => reject(new Error('Upload failed (network error)'));
+    x.onload = () => {
+      let body = {}; try { body = JSON.parse(x.responseText); } catch (e) {}
+      (x.status >= 200 && x.status < 300) ? resolve(body) : reject(new Error(body.detail || x.statusText));
+    };
+    x.send(fd);
+  });
+}
+
+const upMsg = (t, bad) => { const el = $('up-msg'); el.textContent = t; el.style.color = bad ? 'var(--bad)' : ''; };
+$('zip-stt').onchange = async () => {
+  const f = $('zip-stt').files[0]; $('zip-stt').value = '';
+  if (!f) return;
+  const fd = new FormData(); fd.append('name', f.name.replace(/\.zip$/i, '')); fd.append('file', f, f.name);
+  try {
+    upMsg(`Uploading ${f.name}…`);
+    const r = await uploadWithProgress('/api/models/upload', fd, p => upMsg(`Uploading ${f.name}… ${p}%`));
+    upMsg(`Unpacked to ${r.path} - loading…`);
+    $('model-stt').value = r.path;
+    const ok = await startApply('stt', r.path);
+    upMsg(ok ? 'Loaded ✓' : 'Uploaded, but loading failed (see the message above).', !ok);
+  } catch (e) { upMsg(e.message, true); }
+};
+
 for (const kind of TUNABLE) {
-  const apply = () => {
-    const act = state.active[kind], info = state.backend_ui[kind][act.name];
-    const params = Object.assign({}, act.params), model = $('model-' + kind).value.trim();
-    if (model) params[info.model_param] = model;
-    if (info.devices) params.device = $('devsel-' + kind).value;
-    applySelection(kind, {kind, name: act.name, params});
-  };
-  $('model-' + kind).onchange = apply;
+  $('model-' + kind).onchange = () => startApply(kind, $('model-' + kind).value.trim());
   // a <datalist> only lists suggestions matching what is typed: blank the box on focus so all show
   let prev = '';
   $('model-' + kind).onfocus = e => { prev = e.target.value; e.target.placeholder = prev; e.target.value = ''; };
   $('model-' + kind).onblur = e => { if (!e.target.value.trim()) e.target.value = prev; };
-  $('devsel-' + kind).onchange = apply;
+  $('devsel-' + kind).onchange = () => startApply(kind, $('model-' + kind).value.trim());
 }
 
 function fillProfiles() {
@@ -194,7 +279,10 @@ async function refresh() {
   KINDS.forEach(fillSelect);
   ['stt', 'speaker'].forEach(fillTune);
   fillProfiles();
-  KINDS.forEach(k => { $('dev-' + k).textContent = state.devices[k] ? 'running on: ' + state.devices[k] : 'loading model…'; });
+  KINDS.forEach(k => {
+    $('dev-' + k).textContent = pending[k] ? 'Not loaded yet - enter / pick / upload a model to switch to this engine.'
+      : state.devices[k] ? 'running on: ' + state.devices[k] : 'loading model…';
+  });
   // models load in the background at start-up: re-check until every one reports its device
   if (KINDS.some(k => !state.devices[k]) && devPolls++ < 40) setTimeout(() => refresh().catch(() => {}), 3000);
   if (document.activeElement !== $('thr')) {
@@ -207,10 +295,18 @@ async function refresh() {
 for (const kind of KINDS) {
   $('sel-' + kind).onchange = () => {
     const v = $('sel-' + kind).value, body = {kind};
-    if (TUNABLE.includes(kind)) {           // new engine: start from the first config preset that uses it
-      body.name = v.slice(5);
-      const tpl = Object.values(state.preset_specs[kind] || {}).find(x => x.name === body.name);
-      body.params = tpl ? Object.assign({}, tpl.params) : {};
+    if (TUNABLE.includes(kind)) {
+      const name = v.slice(5), act = state.active[kind];
+      const tpl = Object.values(state.preset_specs[kind] || {}).find(x => x.name === name);
+      const info = (state.backend_ui[kind] || {})[name];
+      if (name === act.name) { delete pending[kind]; fillSelect(kind); fillTune(kind); return; }   // back to the loaded engine
+      if (!tpl && info && info.custom) {   // bring-your-own-model engine: wait until the user picks a model
+        pending[kind] = name; fillTune(kind); $('model-' + kind).focus(); return;
+      }
+      delete pending[kind];
+      // new engine: start from the first config preset that uses it
+      applySelection(kind, {kind, name, params: tpl ? Object.assign({}, tpl.params) : {}});
+      return;
     } else if (v.startsWith('preset:')) body.preset = v.slice(7); else body.name = v.slice(5);
     applySelection(kind, body);
   };

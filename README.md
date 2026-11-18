@@ -111,11 +111,31 @@ Practical recommendations:
 | stt | `mlx_whisper` | Whisper on Apple GPU |
 | stt | `funasr` | SenseVoice (zh/yue/en/ja/ko), Paraformer |
 | stt | `sherpa_onnx` | lightest CPU option; SenseVoice / Paraformer / Whisper / Zipformer / NeMo |
-| stt | `hf_transformers` | any HF ASR model, e.g. **MMS-1B-all (1100+ languages)**, Whisper fine-tunes, wav2vec2 |
+| stt | `hf_transformers` | **bring your own model** - any HF ASR model, e.g. **MMS-1B-all (1100+ languages)**, Whisper fine-tunes, wav2vec2 (see below; no presets) |
 | stt | `openai_http` | any local server with `/v1/audio/transcriptions` (whisper.cpp, speaches…) |
 | denoiser | `none`, `deepfilternet` | denoising can *hurt* ASR – A/B test before enabling |
 
 Pick the STT per language (Whisper is weak on some): in the UI dropdown, or `use.stt` in `config.yaml`.
+
+## Bring your own model (`hf_transformers`)
+
+For languages the preset engines handle badly, choose **hf_transformers** in the *Speech-to-text engine* dropdown.
+It has no presets: nothing is downloaded until you choose a model. Then either
+
+* **type** a Hugging Face id (`facebook/mms-1b-all`, `openai/whisper-large-v3`, your own fine-tune `user/model`)
+  or a model **folder on the PC** (`D:\models\my-asr`), then press Enter; or
+* **upload** a model from the tablet: zip the Hugging Face model folder itself (`config.json`, weights,
+  tokenizer / preprocessor files) and pick the `.zip`. It is unpacked to `models/custom/<name>/` and loaded straight away; or
+* tap an entry under **Previously used** - every model that loaded successfully is remembered (shared by all
+  tablets/browsers, stored in `models/model_history.json`; `×` forgets an entry but keeps the files).
+
+Notes: pick the device next to the model (`auto` falls back to CPU if the model can't run on the GPU). The language hint
+goes to the model as-is (MMS needs ISO-639-3 codes like `eng`, `zsm`, `cmn`; Whisper-style models use `en`, `ms`, `ta` …).
+
+**Security:** the browser may only choose the *model* and *device*. Every other engine option (`trust_remote_code`,
+`compute_type`, server addresses, file paths …) comes from `config.yaml`, so a client cannot inject code-execution
+options. Even so, model files can contain pickled code - only load models you trust, and set `server.token` if
+other people can reach the server (an upload endpoint is open to anyone who can open the page).
 
 ## Offline / command line
 
