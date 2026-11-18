@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import subprocess
+import tempfile
 from math import gcd
 
 import numpy as np
@@ -37,11 +39,22 @@ def _ffmpeg_decode(data: bytes, sr: int) -> np.ndarray:
     exe = shutil.which("ffmpeg")
     if not exe:
         raise RuntimeError("Could not decode this audio format. Upload WAV/FLAC/OGG, or install ffmpeg.")
-    p = subprocess.run(
-        [exe, "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-f", "f32le", "-ac", "1", "-ar", str(sr), "pipe:1"],
-        input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    if p.returncode != 0:
+    # Use a real file, not a pipe: m4a/mp4 often keep the index (moov atom) at the end,
+    # which ffmpeg cannot read from a non-seekable stdin (it yields empty audio).
+    fd, path = tempfile.mkstemp(suffix=".audio")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        p = subprocess.run(
+            [exe, "-hide_banner", "-loglevel", "error", "-i", path, "-f", "f32le", "-ac", "1", "-ar", str(sr), "pipe:1"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    if p.returncode != 0 or not p.stdout:
         raise RuntimeError("ffmpeg failed to decode the upload: " + p.stderr.decode(errors="replace")[:300])
     return np.frombuffer(p.stdout, dtype="<f4").copy()
 
