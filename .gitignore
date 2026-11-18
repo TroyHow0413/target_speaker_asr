@@ -2,3 +2,5 @@
 /models
 /profiles
 troy.wav
+/tsasr/__pycache__
+/tsasr/backends/__pycache__
