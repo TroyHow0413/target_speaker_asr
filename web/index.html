@@ -315,14 +315,20 @@ for (const kind of KINDS) {
   };
 }
 
+// Also saved on the server (POST /api/pipeline): applies to every new session - including the OpenAI-compatible
+// /v1 API used by other apps - and survives a restart. The websocket message only changes the running session.
+const saveDefaults = body => api('/api/pipeline', {method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify(body)}).catch(e => setStatus('could not save setting: ' + e.message));
 $('spk-on').onchange = () => {
   $('thr').disabled = !$('spk-on').checked;
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: 'config', speaker_verify: $('spk-on').checked}));
+  saveDefaults({speaker_verify: $('spk-on').checked});
 };
 $('thr').oninput = () => {
   $('thr-out').textContent = (+$('thr').value).toFixed(2);
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: 'config', similarity_threshold: +$('thr').value}));
 };
+$('thr').onchange = () => saveDefaults({similarity_threshold: +$('thr').value});   // on release, not on every tick
 
 /* ---------------- microphone capture (16 kHz int16) ---------------- */
 const WORKLET = `class Tap extends AudioWorkletProcessor{constructor(){super();this.b=new Float32Array(2048);this.n=0}

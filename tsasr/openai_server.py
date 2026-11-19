@@ -5,27 +5,22 @@
     POST /v1/audio/transcriptions   (multipart: file, model, language, response_format)
     GET  /v1/models                 (one entry per enrolled profile)
 
-Point any client that supports a custom OpenAI STT endpoint at  http://<host>:8001/v1
+Served by run_server_openai.py next to the web UI (same port, same engine). Point any client that
+supports a custom OpenAI STT endpoint at  http://<host>:8001/v1
 `model` selects the voice profile:  "tsasr-alice" or "alice" -> profile `alice`;
 anything else (e.g. "whisper-1") -> the default profile (openai.default_profile / --profile).
 """
-import argparse
 import asyncio
 import logging
 import re
-from contextlib import asynccontextmanager
 from typing import Optional
 
-import uvicorn
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import Depends, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from .audio import load_audio_bytes
 from .base import SAMPLE_RATE
-from .config import load_config, resolve_path
-from .engine import Engine
 
 log = logging.getLogger("tsasr.openai")
 
@@ -44,37 +39,13 @@ def _join(texts: list) -> str:
     return out
 
 
-def create_openai_app(cfg: dict, default_profile: Optional[str] = None) -> FastAPI:
-    engine = Engine(cfg)
-    token = (cfg.get("server") or {}).get("token")
+def add_openai_routes(app, engine, cfg: dict, auth, default_profile: Optional[str] = None) -> None:
+    """Register /v1/... on `app`. The engine (models, profiles, UI-chosen settings) is the one the web UI
+    uses, so whatever is configured there applies to these requests immediately."""
     ocfg = cfg.get("openai") or {}
     fallback_profile = default_profile or ocfg.get("default_profile")
     # one request at a time: models are shared and a tablet can fire several clips quickly
     gate = asyncio.Semaphore(int(ocfg.get("max_concurrent", 1)))
-
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        async def warm():
-            try:
-                await asyncio.to_thread(engine.warmup)
-                log.info("models loaded")
-            except Exception:
-                log.exception("warm-up failed - check config.yaml")
-
-        task = asyncio.create_task(warm())
-        yield
-        task.cancel()
-
-    app = FastAPI(title="Target Speaker ASR (OpenAI-compatible)", lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-    def auth(authorization: Optional[str] = Header(None), x_token: Optional[str] = Header(None),
-             token_q: Optional[str] = Query(None, alias="token")):
-        if not token:
-            return
-        bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
-        if token not in (bearer, x_token, token_q):
-            raise HTTPException(401, "bad or missing API key")
 
     def pick_profile(model: Optional[str]) -> str:
         m = (model or "").strip()
@@ -135,31 +106,3 @@ def create_openai_app(cfg: dict, default_profile: Optional[str] = None) -> FastA
             "rejected": [{"start": e["t0"], "end": e["t1"], "reason": e["reason"], "score": e["score"]}
                          for e in events if e["type"] == "rejected"],
         }
-
-    return app
-
-
-def main(argv=None):
-    ap = argparse.ArgumentParser(description="Target speaker ASR - OpenAI-compatible API")
-    ap.add_argument("--config", default=None)
-    ap.add_argument("--host", default=None)
-    ap.add_argument("--port", type=int, default=None, help="default: openai.port in config.yaml, else 8001")
-    ap.add_argument("--profile", default=None, help="default voice profile (overrides openai.default_profile)")
-    ap.add_argument("--ssl", action="store_true", help="serve HTTPS using server.ssl_certfile/ssl_keyfile")
-    args = ap.parse_args(argv)
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    cfg = load_config(args.config)
-    s, o = cfg.get("server") or {}, cfg.get("openai") or {}
-    kw = {}
-    if args.ssl:
-        if not (s.get("ssl_certfile") and s.get("ssl_keyfile")):
-            raise SystemExit("--ssl needs server.ssl_certfile and server.ssl_keyfile in config.yaml")
-        kw["ssl_certfile"] = resolve_path(s["ssl_certfile"])
-        kw["ssl_keyfile"] = resolve_path(s["ssl_keyfile"])
-    uvicorn.run(create_openai_app(cfg, args.profile), host=args.host or o.get("host") or s.get("host", "0.0.0.0"),
-                port=args.port or int(o.get("port", 8001)), log_level="info", **kw)
-
-
-if __name__ == "__main__":
-    main()

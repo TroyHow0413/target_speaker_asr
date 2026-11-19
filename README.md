@@ -75,22 +75,83 @@ Allow inbound port 8000 in Windows Firewall for the tablet. Set `server.token` a
 
 ## OpenAI-compatible API (for chat apps)
 
-A second entry point that exposes the same target-speaker pipeline as `POST /v1/audio/transcriptions`,
-so any app with a "custom OpenAI STT endpoint" setting (Open WebUI, Cherry Studio, …) can use it as its
-microphone. Audio from other speakers is dropped on the server; the client never knows.
+`run_server_openai.py` serves **the same web UI** as `run_server.py` **plus** `POST /v1/audio/transcriptions`, on one port and
+with one set of loaded models. Any app with a "custom OpenAI STT endpoint" setting (an opencode voice plugin, Open WebUI,
+Cherry Studio, …) can then use it as its microphone. Audio from other speakers is dropped on the server; the client never knows.
 
 ```powershell
-uv run python run_server_openai.py --profile alice          # http://<PC-IP>:8001/v1
+uv run python run_server_openai.py --profile alice          # UI: http://localhost:8001   API: http://<PC-IP>:8001/v1
 ```
 
-* Enroll the voice first with the web UI (`run_server.py`) or `scripts/cli.py enroll`. Profiles are shared on disk.
+* **Configure in the browser first** (`http://localhost:8001`): record/upload the target voice, pick the STT / speaker / VAD models,
+  set the similarity threshold and the speaker-filter switch. Everything applies to `/v1` requests immediately. The tablet
+  microphone in the UI needs HTTPS (`--ssl`); `localhost` on the PC works without it.
+* **Saved across restarts:** the chosen models, the threshold and the filter switch are written to `models/active_state.json`
+  (override `state_file` in `config.yaml`). It only stores what you changed, so other `config.yaml` values still apply. A saved
+  model that no longer loads falls back to `config.yaml`. Delete the file to reset to `config.yaml`.
 * **Client settings:** base URL `http://<PC-IP>:8001/v1`, API key = `server.token` (anything if no token), model = `tsasr-alice`
   (or `alice`). Any other model name (e.g. `whisper-1`) uses `--profile` / `openai.default_profile`. `GET /v1/models` lists profiles.
 * `response_format`: `json`, `text`, `verbose_json` (adds per-segment scores and the rejected segments). Not streaming: the
   client uploads a finished clip. Browser-recorded clips (webm/opus) need `ffmpeg` on the PATH.
-* Plain HTTP by default (chat backends call it server-to-server; the browser mic permission belongs to the chat page). Use `--ssl`
-  to serve the certificate from `scripts/make_cert.py`. Port, default profile and concurrency: `openai:` in `config.yaml`.
-* It loads its own copy of the models, so running it next to `run_server.py` uses roughly twice the (V)RAM. Stop one if memory is tight.
+* Plain HTTP by default (chat backends call it server-to-server). `--ssl` serves the certificate from `scripts/make_cert.py`,
+  but clients such as Node plugins reject a self-signed certificate. Port, default profile and concurrency: `openai:` in `config.yaml`.
+* Don't run it together with `run_server.py`: both would load all models (about twice the (V)RAM) and each keeps its own copy of the
+  saved settings. Use one or the other.
+
+### Use it from opencode (terminal UI)
+
+opencode has no built-in voice input, so use a plugin that can send its recording to a custom OpenAI-compatible STT endpoint.
+[`renjfk/opencode-voice`](https://github.com/renjfk/opencode-voice) does (`sttEndpoint`). The recording happens on the machine that
+runs opencode, so opencode can be on a different computer than this server. The steps below follow that plugin's README and
+have **not** been tested against this server yet.
+
+1. **On the server PC:** start `run_server_openai.py`, enroll the voice and choose the models in the web UI (see above), and allow
+   inbound TCP port 8001 in the firewall if opencode runs on another machine. Find the PC's address with `ipconfig`.
+2. **On the opencode machine, check the connection first** (replace `<PC-IP>`; `--ssl` is not needed):
+
+   ```powershell
+   curl.exe http://<PC-IP>:8001/v1/models
+   curl.exe -X POST http://<PC-IP>:8001/v1/audio/transcriptions -F "file=@test.wav" -F "model=tsasr-alice" -F "response_format=verbose_json"
+   ```
+
+   The first call must list `tsasr-alice`; the second returns the text plus a similarity score per segment, and `rejected` shows what
+   was filtered out as another speaker. Fix this before touching opencode.
+3. **Install `sox`** on that machine (the plugin records the microphone with it). The plugin's README documents macOS and Linux
+   (and WSL2); it has no instructions for native Windows PowerShell, so on Windows run opencode inside WSL2 or check the plugin's
+   issues.
+4. **Configure the plugin** in `~/.config/opencode/cli.json` (create it if missing):
+
+   ```json
+   {
+     "keybinds": { "session_rename": "none" },
+     "plugins": [
+       {
+         "package": "@renjfk/opencode-voice",
+         "options": {
+           "sttEndpoint": "http://<PC-IP>:8001/v1",
+           "sttModel": "tsasr-alice",
+           "sttApiKeyEnv": "TSASR_TOKEN",
+           "endpoint": "https://api.anthropic.com/v1",
+           "model": "claude-haiku-4-5",
+           "apiKeyEnv": "ANTHROPIC_API_KEY"
+         }
+       }
+     ]
+   }
+   ```
+
+   * `sttEndpoint` / `sttModel` point at this server; `sttModel` is `tsasr-<profile>`. `/stt-model` lists the profiles from `GET /v1/models`.
+   * `sttApiKeyEnv` is the **name** of an environment variable that holds `server.token`. Omit it when no token is set.
+   * `endpoint` / `model` / `apiKeyEnv` are a *separate* chat model that the plugin uses to clean up the transcript (punctuation,
+     filler words). The plugin's README lists them as required; use any OpenAI-compatible chat endpoint. If that call fails it
+     falls back to the raw transcript.
+   * `ctrl+r` is the plugin's record key, which is why `session_rename` is set to `none`.
+5. **Use it:** `ctrl+r` starts recording, `ctrl+r` again stops, transcribes and opens the text for review (Enter sends it, Esc
+   cancels). `ctrl+x` then `r` records and submits directly. `/stt-mic` picks the microphone.
+
+If the plugin ever keeps an old version after an update, delete `~/.cache/opencode/packages/@renjfk/` and restart opencode.
+Only speech that matches the enrolled voice comes back; if nothing appears, check the `rejected` list from step 2 and lower the
+similarity threshold in the web UI.
 
 ## Hardware auto-detection
 

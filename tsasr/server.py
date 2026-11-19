@@ -23,6 +23,7 @@ from .audio import load_audio_bytes
 from .config import ROOT, load_config, resolve_path
 from .custom_models import extract_model_zip
 from .engine import Engine
+from .openai_server import add_openai_routes
 
 log = logging.getLogger("tsasr")
 
@@ -36,7 +37,9 @@ class SelectBody(BaseModel):
     params: Optional[Dict[str, Any]] = None
 
 
-def create_app(cfg: dict) -> FastAPI:
+def create_app(cfg: dict, openai: bool = False, default_profile: Optional[str] = None) -> FastAPI:
+    """The web UI + /api + /ws app. With `openai=True` the OpenAI-compatible /v1 routes are served by
+    the same app (and so the same loaded models and the same UI settings)."""
     engine = Engine(cfg)
     token = (cfg.get("server") or {}).get("token")
 
@@ -55,8 +58,11 @@ def create_app(cfg: dict) -> FastAPI:
 
     app = FastAPI(title="Target Speaker ASR", lifespan=lifespan)
 
-    def auth(x_token: Optional[str] = Header(None), token_q: Optional[str] = Query(None, alias="token")):
-        if token and (x_token or token_q) != token:
+    def auth(x_token: Optional[str] = Header(None), token_q: Optional[str] = Query(None, alias="token"),
+             authorization: Optional[str] = Header(None)):
+        # X-Token / ?token= for the web UI, "Authorization: Bearer" for OpenAI-style clients
+        bearer = authorization[7:].strip() if authorization and authorization.lower().startswith("bearer ") else None
+        if token and token not in (x_token, token_q, bearer):
             raise HTTPException(401, "bad or missing token")
 
     # ---- REST ----------------------------------------------------------
@@ -76,6 +82,16 @@ def create_app(cfg: dict) -> FastAPI:
             log.exception("select failed")
             raise HTTPException(400, f"{type(e).__name__}: {e}")
         return engine.describe()
+
+    @app.post("/api/pipeline", dependencies=[Depends(auth)])
+    async def set_pipeline(body: Dict[str, Any]):
+        """Change pipeline defaults (similarity threshold, speaker filter ...) for all new sessions,
+        including the OpenAI API, and remember them across restarts."""
+        try:
+            engine.update_defaults(**body)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        return engine.describe()["pipeline"]
 
     @app.post("/api/enroll", dependencies=[Depends(auth)])
     async def enroll(profile: str = Form(...), append: bool = Form(False),
@@ -210,27 +226,41 @@ def create_app(cfg: dict) -> FastAPI:
             out_q.put_nowait(None)
             await sender_task
 
+    if openai:
+        add_openai_routes(app, engine, cfg, auth, default_profile)
+
     # ---- tablet web client (must be mounted last) -----------------------
     app.mount("/", StaticFiles(directory=str(ROOT / "web"), html=True), name="web")
     return app
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(description="Target speaker ASR server")
+def main(argv=None, openai: bool = False):
+    """openai=False: run_server.py  (web UI, HTTPS when certificates are configured, port server.port)
+    openai=True:  run_server_openai.py  (web UI + OpenAI-compatible /v1, plain HTTP unless --ssl, port openai.port)"""
+    ap = argparse.ArgumentParser(description="Target speaker ASR server" + (" + OpenAI-compatible API" if openai else ""))
     ap.add_argument("--config", default=None)
     ap.add_argument("--host", default=None)
     ap.add_argument("--port", type=int, default=None)
+    if openai:
+        ap.add_argument("--profile", default=None, help="default voice profile (overrides openai.default_profile)")
+        ap.add_argument("--ssl", action="store_true", help="serve HTTPS using server.ssl_certfile/ssl_keyfile")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config(args.config)
-    s = cfg.get("server") or {}
+    s, o = cfg.get("server") or {}, cfg.get("openai") or {}
+    have_certs = bool(s.get("ssl_certfile") and s.get("ssl_keyfile"))
+    use_ssl = args.ssl if openai else have_certs
+    if use_ssl and not have_certs:
+        raise SystemExit("--ssl needs server.ssl_certfile and server.ssl_keyfile in config.yaml")
     kw = {}
-    if s.get("ssl_certfile") and s.get("ssl_keyfile"):
+    if use_ssl:
         kw["ssl_certfile"] = resolve_path(s["ssl_certfile"])
         kw["ssl_keyfile"] = resolve_path(s["ssl_keyfile"])
-    uvicorn.run(create_app(cfg), host=args.host or s.get("host", "0.0.0.0"),
-                port=args.port or int(s.get("port", 8000)), log_level="info", **kw)
+    port = args.port or int((o.get("port", 8001) if openai else s.get("port", 8000)))
+    host = args.host or (o.get("host") if openai else None) or s.get("host", "0.0.0.0")
+    app = create_app(cfg, openai=openai, default_profile=getattr(args, "profile", None))
+    uvicorn.run(app, host=host, port=port, log_level="info", **kw)
 
 
 if __name__ == "__main__":

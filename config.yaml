@@ -16,11 +16,16 @@ server:
   ssl_certfile: certs/server.crt   # needed for the tablet microphone (HTTPS). Create with scripts/make_cert.py
   ssl_keyfile: certs/server.key
 
-# OpenAI-compatible API (run_server_openai.py). Shares token/ssl with `server`; HTTPS only with --ssl.
+# run_server_openai.py = this web UI + an OpenAI-compatible API on ONE port and ONE set of loaded models.
+# Shares `server.token` / ssl files with the web server; it uses HTTPS only when started with --ssl.
 openai:
   port: 8001
   default_profile: null            # used when `model` is not "tsasr-<profile>" (e.g. a client that sends "whisper-1")
   max_concurrent: 1                # clips transcribed at the same time
+
+# Choices made in the web UI (models, similarity threshold, speaker filter) are saved here and override
+# config.yaml after a restart. Delete this file to go back to exactly what config.yaml says.
+state_file: models/active_state.json
 
 profiles_dir: profiles
 custom_models_dir: models/custom           # where uploaded model .zip files are unpacked

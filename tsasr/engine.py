@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import json
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Dict, Optional
 
 import numpy as np
@@ -16,7 +19,7 @@ from .base import SAMPLE_RATE
 from .config import resolve_path
 from .custom_models import ModelHistory, check_device, check_hf_model
 from .device import describe_device, hardware_summary
-from .pipeline import Pipeline, PipelineParams, extract_speech
+from .pipeline import TUNABLE, Pipeline, PipelineParams, extract_speech
 from .profiles import ProfileStore
 from .registry import KINDS
 
@@ -70,6 +73,79 @@ class Engine:
             if key is None:
                 raise ValueError(f"config `use.{kind}` is required")
             self.specs[kind] = self._resolve(kind, preset=key)
+        self._config_specs = {k: dict(v) for k, v in self.specs.items()}  # what config.yaml asks for
+
+        # Choices made in the web UI survive a restart: they live in a small state file that
+        # overrides config.yaml for exactly the things the user changed (models, pipeline overrides).
+        self._state_path = Path(resolve_path(cfg.get("state_file", "models/active_state.json")))
+        self._pipeline_overrides: Dict[str, object] = {}
+        self._from_state: set = set()
+        self._load_state()
+
+    # ---- persisted UI choices ------------------------------------------
+    def _load_state(self) -> None:
+        log = logging.getLogger("tsasr.engine")
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            log.warning("ignoring unreadable state file %s", self._state_path)
+            return
+        for kind, spec in (data.get("specs") or {}).items():
+            if kind in KINDS and isinstance(spec, dict) and spec.get("name") in registry.available(kind) \
+                    and isinstance(spec.get("params"), dict):
+                self.specs[kind] = {"name": spec["name"], "params": dict(spec["params"]),
+                                    "preset": spec.get("preset") if spec.get("preset") in
+                                    ((self.cfg.get("presets") or {}).get(kind) or {}) else None}
+                self._from_state.add(kind)
+        try:
+            self.update_defaults(save=False, **(data.get("pipeline") or {}))
+        except (ValueError, TypeError):
+            log.warning("ignoring invalid pipeline settings in %s", self._state_path)
+        if self._from_state or self._pipeline_overrides:
+            log.info("restored saved settings from %s (models: %s)", self._state_path,
+                     ", ".join(f"{k}={self.specs[k]['name']}" for k in sorted(self._from_state)) or "none")
+
+    def _save_state(self) -> None:
+        data = {"specs": {k: self.specs[k] for k in KINDS if self.specs[k] != self._config_specs[k]},
+                "pipeline": self._pipeline_overrides}
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self._state_path)
+        except OSError:
+            logging.getLogger("tsasr.engine").exception("could not save %s", self._state_path)
+
+    def update_defaults(self, save: bool = True, **kw) -> Dict[str, object]:
+        """Change pipeline defaults for every *new* session (and so for the OpenAI API) and remember them.
+        Only keys the user changed are stored, so later edits of the others in config.yaml still apply."""
+        applied: Dict[str, object] = {}
+        for k, v in kw.items():
+            if k not in TUNABLE:
+                raise ValueError(f"unknown pipeline setting {k!r}")
+            cur = getattr(self.defaults, k)
+            if k == "min_verify_s":
+                v = None if v in (None, "") else float(v)
+            elif k == "language":
+                v = str(v).strip() or None if v is not None else None
+            elif k == "short_policy":
+                if v not in ("tile", "reject", "accept"):
+                    raise ValueError("short_policy must be tile, reject or accept")
+            elif isinstance(cur, bool):
+                v = bool(v)
+            elif isinstance(cur, int):
+                v = int(v)
+            elif isinstance(cur, float):
+                v = float(v)
+            applied[k] = v
+        for k, v in applied.items():
+            setattr(self.defaults, k, v)
+        self._pipeline_overrides.update(applied)
+        if save and applied:
+            self._save_state()
+        return applied
 
     # ---- component management ----------------------------------------
     def _resolve(self, kind: str, preset: Optional[str] = None, name: Optional[str] = None,
@@ -93,7 +169,18 @@ class Engine:
                     log = logging.getLogger("tsasr.engine")
                     log.info("loading %s: %s %s ...", kind, s["name"], s["params"])
                     t0 = time.perf_counter()
-                    inst = registry.create(kind, s["name"], s["params"])
+                    try:
+                        inst = registry.create(kind, s["name"], s["params"])
+                    except Exception:
+                        if kind not in self._from_state:
+                            raise
+                        # the model saved from the UI no longer loads (deleted / moved): use config.yaml's
+                        log.exception("saved %s model failed to load - falling back to config.yaml", kind)
+                        self._from_state.discard(kind)
+                        self.specs[kind] = dict(self._config_specs[kind])
+                        self._save_state()
+                        s = self.specs[kind]
+                        inst = registry.create(kind, s["name"], s["params"])
                     self._inst[kind] = inst
                     log.info("loaded %s in %.1fs on %s", kind, time.perf_counter() - t0, describe_device(inst.device))
         return inst
@@ -109,8 +196,10 @@ class Engine:
         with self._lock:
             self._inst[kind] = new
             self.specs[kind] = spec
+            self._from_state.discard(kind)
             if kind == "speaker":
                 self._emb_cache.clear()
+            self._save_state()
         info = BACKEND_UI.get(kind, {}).get(spec["name"], {})
         model = spec["params"].get(info.get("model_param", ""))
         if info.get("custom") and model:  # only successful loads get here -> remember them
