@@ -14,6 +14,32 @@ class NoDenoiser(Denoiser):
         return audio
 
 
+def _patch_torchaudio_backend() -> None:
+    """deepfilternet 0.5.x does `from torchaudio.backend.common import AudioMetaData`, a module
+    that newer torchaudio removed. Provide a stand-in so the import works (only used for typing)."""
+    import sys
+    import types
+
+    try:
+        import torchaudio.backend.common  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import torchaudio
+
+    meta = getattr(torchaudio, "AudioMetaData", None)
+    if meta is None:
+        class meta:  # type: ignore[no-redef]
+            pass
+    backend = types.ModuleType("torchaudio.backend")
+    common = types.ModuleType("torchaudio.backend.common")
+    common.AudioMetaData = meta
+    backend.common = common
+    sys.modules["torchaudio.backend"] = backend
+    sys.modules["torchaudio.backend.common"] = common
+    torchaudio.backend = backend
+
+
 @register("denoiser", "deepfilternet")
 class DeepFilterNet(Denoiser):
     """pip install deepfilternet torch torchaudio  - real-time speech enhancement.
@@ -22,6 +48,7 @@ class DeepFilterNet(Denoiser):
     def __init__(self, post_filter: bool = False):
         import torch
         import torchaudio
+        _patch_torchaudio_backend()
         from df.enhance import enhance, init_df
 
         self._torch, self._ta, self._enhance = torch, torchaudio, enhance
