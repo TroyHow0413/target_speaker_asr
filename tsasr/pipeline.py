@@ -220,7 +220,13 @@ class Pipeline:
         t = time.perf_counter()
         result = eng.get("stt").transcribe(stt_audio, self.language or p.language)
         stt_ms = int((time.perf_counter() - t) * 1000)
+        from .engine import BACKEND_UI  # local import: engine imports this module
+        spec = eng.specs["stt"]
+        mp =BACKEND_UI.get("stt", {}).get(spec["name"], {}).get("model_param", "")
+        stt_model = str(spec["params"].get(mp) or spec["name"])
+        if "/" in stt_model or "\\" in stt_model:  # HF id / path -> last component
+            stt_model = stt_model.replace("\\", "/").rstrip("/").split("/")[-1]
         if not result.text:
             return {"type": "rejected", "reason": "empty", "score": None if score is None else round(score, 3), **info}
         return {"type": "transcript", "text": result.text, "language": result.language,
-                "score": None if score is None else round(score, 3), "stt_ms": stt_ms, **info}
+                "score": None if score is None else round(score, 3), "stt_ms": stt_ms, "stt_model": stt_model, **info}

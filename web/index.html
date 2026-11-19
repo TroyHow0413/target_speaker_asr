@@ -420,7 +420,7 @@ function addLine(ev) {
   m.className = 'meta';
   const score = ev.score == null ? '' : ` · match ${ev.score.toFixed(2)}`;
   m.textContent = ev.type === 'transcript'
-    ? `${ev.t0}s${score}${ev.language ? ' · ' + ev.language : ''} · stt ${ev.stt_ms} ms`
+    ? `${ev.t0}s${score}${ev.language ? ' · ' + ev.language : ''} · STT${ev.stt_model ? ' (' + ev.stt_model + ')' : ''} ${ev.stt_ms} ms`
     : `${ev.t0}s${score} · skipped: ${ev.reason}`;
   t.textContent = ev.type === 'transcript' ? ev.text : '(not the target speaker — not transcribed)';
   d.append(m, t); $('log').prepend(d);
