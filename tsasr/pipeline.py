@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 import numpy as np
 
@@ -28,6 +28,7 @@ class PipelineParams:
     min_silence_ms: int = 500       # silence that closes an utterance
     speech_pad_ms: int = 200        # context kept before/after speech
     max_utterance_s: float = 20.0   # force a cut for very long monologues
+    speaker_verify: bool = True     # False -> target-speaker filter OFF: everyone who speaks is transcribed
     similarity_threshold: float = 0.5   # cosine similarity needed to count as the target
     min_verify_s: Optional[float] = None  # None -> use the encoder's own minimum
     short_policy: str = "tile"      # utterance shorter than min_verify_s: tile | reject | accept
@@ -35,6 +36,14 @@ class PipelineParams:
     denoise_for_verify: bool = False
     denoise_for_stt: bool = False
     emit_rejected: bool = True
+    # Speaker-change cutting: while someone keeps talking without pauses, re-check who is speaking
+    # on a sliding window and cut the utterance when the speaker changes (so a neighbour who never
+    # stops talking cannot swallow the target's speech into one long rejected segment).
+    speaker_cut: bool = True
+    speaker_check_ms: int = 400     # how often to re-check the speaker during continuous speech
+    speaker_window_ms: int = 1500   # audio length used for each check
+    speaker_flip_checks: int = 2    # consecutive disagreeing checks needed before cutting
+    speaker_cut_margin: float = 0.1  # window threshold = similarity_threshold - margin (short windows are noisy)
 
     @classmethod
     def from_dict(cls, d: dict) -> "PipelineParams":
@@ -55,6 +64,8 @@ class Segmenter:
         self._buf = np.zeros(0, dtype=np.float32)
         self._frame_idx = 0
         self._preroll: deque = deque()
+        # optional: audio window -> True (target) / False (other) / None (can't tell)
+        self.classifier: Optional[Callable[[np.ndarray], Optional[bool]]] = None
         self._reset_utt()
 
     def _reset_utt(self) -> None:
@@ -63,6 +74,10 @@ class Segmenter:
         self._silence = 0
         self._voiced = 0
         self._start_frame = 0
+        self._label: Optional[bool] = None   # speaker label of the current utterance
+        self._flips = 0
+        self._since_check = 0
+        self._agree_end = 0                   # frame count (in _frames) where the label last agreed
 
     def feed(self, audio: np.ndarray) -> list:
         """Returns events: ("start", t) | ("segment", t0, t1, audio) | ("discard",)"""
@@ -109,9 +124,46 @@ class Segmenter:
             self._silence, self._voiced = 0, self._voiced + 1
         else:
             self._silence += 1
+        if speech and self.classifier is not None and p.speaker_cut and p.speaker_verify:
+            self._check_speaker(events)
         dur_s = len(self._frames) * self.fs / self.sr
         if self._silence * self.frame_ms >= p.min_silence_ms or dur_s >= p.max_utterance_s:
             self._finish(events)
+
+    def _check_speaker(self, events: list) -> None:
+        p = self.p
+        self._since_check += 1
+        nwin = max(1, int(p.speaker_window_ms / self.frame_ms))
+        if self._since_check * self.frame_ms < p.speaker_check_ms or len(self._frames) < nwin:
+            return
+        self._since_check = 0
+        lab = self.classifier(np.concatenate(self._frames[-nwin:]))
+        if lab is None:
+            return
+        if self._label is None or lab == self._label:
+            self._label, self._flips = lab, 0
+            self._agree_end = len(self._frames)
+            return
+        self._flips += 1
+        if self._flips < p.speaker_flip_checks:
+            return
+        # Speaker changed: close everything up to where the old speaker last matched, and
+        # carry the rest over into a fresh utterance (it will be labelled on its own).
+        cut = self._agree_end
+        head, tail = self._frames[:cut], self._frames[cut:]
+        t0 = self._start_frame * self.fs / self.sr
+        if head and len(head) * self.frame_ms >= p.min_speech_ms:
+            audio = np.concatenate(head)
+            events.append(("segment", t0, t0 + audio.size / self.sr, audio))
+        else:
+            events.append(("discard",))
+        self._start_frame += cut
+        self._frames = tail
+        self._voiced = len(tail)
+        self._silence = 0
+        self._label, self._flips, self._since_check = lab, 0, 0
+        self._agree_end = len(tail)
+        events.append(("start", self._start_frame * self.fs / self.sr))
 
     def _finish(self, events: list) -> None:
         p = self.p
@@ -144,6 +196,7 @@ class Pipeline:
         self.engine, self.profile_id, self.p = engine, profile_id, params
         self.language = language
         self.seg = Segmenter(vad, params)
+        self.seg.classifier = self._window_is_target
 
     # ---- public API -----------------------------------------------------
     def update(self, **kw) -> None:
@@ -187,6 +240,15 @@ class Pipeline:
                 out.append(res)
         return out
 
+    def _window_is_target(self, audio: np.ndarray) -> Optional[bool]:
+        """Cheap per-window speaker check used to cut continuous speech at speaker changes."""
+        eng, p = self.engine, self.p
+        spk = eng.get("speaker")
+        if audio.size < int((p.min_verify_s or spk.min_seconds) * SAMPLE_RATE):
+            return None
+        score = float(np.dot(spk.embed(audio), eng.profile_embedding(self.profile_id)))
+        return score >= p.similarity_threshold - p.speaker_cut_margin
+
     def _score(self, audio: np.ndarray):
         """-> (similarity or None, reason or None)"""
         eng, p = self.engine, self.p
@@ -211,7 +273,10 @@ class Pipeline:
         verify_audio = clean if (clean is not None and p.denoise_for_verify) else audio
         stt_audio = clean if (clean is not None and p.denoise_for_stt) else audio
 
-        score, reason = self._score(verify_audio)
+        if p.speaker_verify:
+            score, reason = self._score(verify_audio)
+        else:
+            score, reason = None, None
         if reason == "too_short":
             return {"type": "rejected", "reason": reason, "score": None, **info}
         if score is not None and score < p.similarity_threshold:

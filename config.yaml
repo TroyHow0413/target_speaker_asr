@@ -44,12 +44,18 @@ pipeline:
   min_silence_ms: 500         # pause that ends an utterance -> controls latency (lower = faster, more cuts)
   speech_pad_ms: 200
   max_utterance_s: 20.0
+  speaker_verify: true        # false = filter off, transcribe every speaker (also toggleable live in the UI)
   similarity_threshold: 0.5   # raise if other speakers leak through, lower if the target gets rejected
   short_policy: tile          # tile | reject | accept   (utterances shorter than the encoder minimum)
   language: null              # default language hint for STT (null = auto)
   denoise_for_verify: false
   denoise_for_stt: false
   emit_rejected: true
+  speaker_cut: true           # cut continuous speech when the speaker changes (neighbour who never pauses)
+  speaker_check_ms: 400
+  speaker_window_ms: 1500
+  speaker_flip_checks: 2
+  speaker_cut_margin: 0.1
 
 presets:
   vad:

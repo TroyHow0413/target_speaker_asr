@@ -79,6 +79,7 @@
   </div>
   <div class="grid" style="margin-top:12px">
     <label>Language hint (blank = auto)<input id="lang" placeholder="en, zh, ms, ta …"></label>
+    <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="spk-on" checked style="width:auto"> Only transcribe the target speaker <small>(uncheck = transcribe everyone)</small></label>
     <label>Match threshold: <output id="thr-out"></output><input type="range" id="thr" min="0" max="1" step="0.01" value="0.5"></label>
   </div>
 </section>
@@ -285,6 +286,8 @@ async function refresh() {
   });
   // models load in the background at start-up: re-check until every one reports its device
   if (KINDS.some(k => !state.devices[k]) && devPolls++ < 40) setTimeout(() => refresh().catch(() => {}), 3000);
+  $('spk-on').checked = state.pipeline.speaker_verify !== false;
+  $('thr').disabled = !$('spk-on').checked;
   if (document.activeElement !== $('thr')) {
     $('thr').value = state.pipeline.similarity_threshold;
     $('thr-out').textContent = (+$('thr').value).toFixed(2);
@@ -312,6 +315,10 @@ for (const kind of KINDS) {
   };
 }
 
+$('spk-on').onchange = () => {
+  $('thr').disabled = !$('spk-on').checked;
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: 'config', speaker_verify: $('spk-on').checked}));
+};
 $('thr').oninput = () => {
   $('thr-out').textContent = (+$('thr').value).toFixed(2);
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({type: 'config', similarity_threshold: +$('thr').value}));
@@ -458,7 +465,7 @@ $('btn-live').onclick = async () => {
   sock.onclose = () => { clearTimeout(flushTimer); ws = null; liveUi(false); $('live-ind').textContent = ''; $('btn-live').disabled = false; setStatus('ready'); ready.rej(new Error('closed')); };
   try {
     await readyP;
-    sock.send(JSON.stringify({type: 'config', similarity_threshold: +$('thr').value}));
+    sock.send(JSON.stringify({type: 'config', similarity_threshold: +$('thr').value, speaker_verify: $('spk-on').checked}));
     stopCap = await startCapture(i16 => { if (sock.readyState === 1) sock.send(i16.buffer); });
     liveUi(true); setStatus('listening'); say('');
   } catch (e) {
