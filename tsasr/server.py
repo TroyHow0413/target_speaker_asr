@@ -255,6 +255,26 @@ def create_app(cfg: dict, openai: bool = False, default_profile: Optional[str] =
     return app
 
 
+def _check_port_free(host: str, port: int) -> None:
+    """Fail fast (before the slow model loading) when the port is taken, and suggest a free one."""
+    import socket
+
+    def free(p: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((host, p))
+                return True
+            except OSError:
+                return False
+
+    if free(port):
+        return
+    alt = next((p for p in range(port + 1, port + 100) if free(p)), None)
+    hint = f" Try: --port {alt}  (or set server.port in config.yaml)" if alt else ""
+    raise SystemExit(f"Port {port} on {host} is already in use.{hint}")
+
+
 def main(argv=None, openai: bool = False):
     """openai=False: run_server.py  (web UI, HTTPS when certificates are configured, port server.port)
     openai=True:  run_server_openai.py  (web UI + OpenAI-compatible /v1, plain HTTP unless --ssl, port openai.port)"""
@@ -280,6 +300,7 @@ def main(argv=None, openai: bool = False):
         kw["ssl_keyfile"] = resolve_path(s["ssl_keyfile"])
     port = args.port or int((o.get("port", 8001) if openai else s.get("port", 8000)))
     host = args.host or (o.get("host") if openai else None) or s.get("host", "0.0.0.0")
+    _check_port_free(host, port)
     app = create_app(cfg, openai=openai, default_profile=getattr(args, "profile", None))
     uvicorn.run(app, host=host, port=port, log_level="info", **kw)
 

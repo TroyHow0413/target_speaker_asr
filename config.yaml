@@ -11,7 +11,7 @@
 
 server:
   host: 0.0.0.0
-  port: 8000
+  port: 8010                       # 8000 is taken on the lab server; override with --port
   idle_unload_s: 600               # free models + GPU memory after this many idle seconds (0 = never); they reload on next use
   preload: false                   # false = don't load models at startup (first request loads them, takes a few seconds)
   token: null                    # set a string to require ?token=... (recommended on shared Wi-Fi)
