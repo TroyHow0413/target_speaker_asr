@@ -82,6 +82,49 @@ class Engine:
         self._from_state: set = set()
         self._load_state()
 
+        # idle offload: models are loaded lazily by get(), so dropping them is safe at any time
+        self._last_used = time.monotonic()
+        self._active_sessions = 0
+
+    # ---- idle offload ---------------------------------------------------
+    def session_opened(self) -> None:
+        with self._lock:
+            self._active_sessions += 1
+            self._last_used = time.monotonic()
+
+    def session_closed(self) -> None:
+        with self._lock:
+            self._active_sessions = max(0, self._active_sessions - 1)
+            self._last_used = time.monotonic()
+
+    def unload(self) -> bool:
+        """Free all loaded models (and the GPU memory they hold). They reload on next use."""
+        with self._lock:
+            if not self._inst:
+                return False
+            insts, self._inst = list(self._inst.values()), {}
+        for inst in insts:
+            try:
+                inst.close()
+            except Exception:
+                logging.getLogger("tsasr.engine").exception("error while closing a model")
+        del insts
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        logging.getLogger("tsasr.engine").info("models unloaded (idle) - GPU memory released")
+        return True
+
+    def unload_if_idle(self, idle_s: float) -> bool:
+        with self._lock:
+            idle = self._active_sessions == 0 and self._inst and time.monotonic() - self._last_used >= idle_s
+        return self.unload() if idle else False
+
     # ---- persisted UI choices ------------------------------------------
     def _load_state(self) -> None:
         log = logging.getLogger("tsasr.engine")
@@ -160,6 +203,7 @@ class Engine:
         return {"name": name, "params": dict(params or {}), "preset": None}
 
     def get(self, kind: str):
+        self._last_used = time.monotonic()
         inst = self._inst.get(kind)
         if inst is None:
             with self._lock:

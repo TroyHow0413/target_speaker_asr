@@ -45,6 +45,9 @@ def create_app(cfg: dict, openai: bool = False, default_profile: Optional[str] =
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        scfg = cfg.get("server") or {}
+        idle_s = float(scfg.get("idle_unload_s") or 0)  # 0 = never unload
+
         async def warm():
             try:
                 await asyncio.to_thread(engine.warmup)
@@ -52,9 +55,25 @@ def create_app(cfg: dict, openai: bool = False, default_profile: Optional[str] =
             except Exception:
                 log.exception("warm-up failed - pick another model in the UI or fix config.yaml")
 
-        task = asyncio.create_task(warm())
+        async def reaper():
+            while True:
+                await asyncio.sleep(min(30.0, max(5.0, idle_s / 4)))
+                try:
+                    await asyncio.to_thread(engine.unload_if_idle, idle_s)
+                except Exception:
+                    log.exception("idle unload failed")
+
+        tasks = []
+        if scfg.get("preload", True):
+            tasks.append(asyncio.create_task(warm()))
+        else:
+            log.info("preload off: models load on first use")
+        if idle_s > 0:
+            log.info("models will be unloaded after %.0fs idle", idle_s)
+            tasks.append(asyncio.create_task(reaper()))
         yield
-        task.cancel()
+        for t in tasks:
+            t.cancel()
 
     app = FastAPI(title="Target Speaker ASR", lifespan=lifespan)
 
@@ -163,6 +182,7 @@ def create_app(cfg: dict, openai: bool = False, default_profile: Optional[str] =
             await ws.close(code=4400)
             return
 
+        engine.session_opened()
         loop = asyncio.get_running_loop()
         in_q: "queue.Queue" = queue.Queue()
         out_q: "asyncio.Queue" = asyncio.Queue()
@@ -220,6 +240,7 @@ def create_app(cfg: dict, openai: bool = False, default_profile: Optional[str] =
         except WebSocketDisconnect:
             pass
         finally:
+            engine.session_closed()
             stop.set()  # socket is gone: nothing can be delivered, skip queued audio
             in_q.put(None)
             await asyncio.to_thread(thread.join)
